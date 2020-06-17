@@ -70,7 +70,7 @@ function prepare_batch_input(batch)
     decoder_token_inputs = batch["decoder_tokens"][1:end-1,:]
     decoder_pos_tags = batch["tgt_pos_tags"][1:end-1, : ]
     decoder_char_inputs = batch["decoder_characters"][:,1:end-1,:]
-    decoder_coref_inputs = zeros(size(batch["tgt_copy_indices"][1:end-1,:])) ## TODO change here, not correct!!!
+    decoder_coref_inputs = Integer.(zeros(size(batch["tgt_copy_indices"][1:end-1,:]))) ## TODO change here, not correct!!!
 
     decoder_inputs["token"] = decoder_token_inputs
     decoder_inputs["pos_tag"] = decoder_pos_tags
