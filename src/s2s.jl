@@ -3,7 +3,6 @@ using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random, CuArrays, IterT
 include("debug.jl")
 include("data.jl")
 include("embed.jl")
-include("linear.jl")
 
 # ## S2S: Sequence to sequence model with attention
 #
@@ -18,10 +17,13 @@ struct Attention; wquery; wattn; scale; end
 struct S2S
     #srcembed::Embed       # encinput(B,Tx) -> srcembed(Ex,B,Tx)
     encoder::RNN          # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
-    memory::Memory        # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
+    srcmemory::Memory        # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
     #tgtembed::Embed       # decinput(B,Ty) -> tgtembed(Ey,B,Ty)
     decoder::RNN          # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
-    attention::Attention  # deccell(H,B,Ty), keys(H,Tx,B), vals(Dx*H,Tx,B) -> attnvec(H,B,Ty)
+    tgtmemory::Memory        # enccell(Dy*Hy,B,Ty) -> keys(H,Ty,B), vals(Dy*H,Ty,B)
+    srcattention::Attention  # deccell(H,B,Ty), keys(H,Tx,B), vals(Dx*H,Tx,B) -> attnvec(H,B,Ty)
+    tgtattention::Attention  # deccell(H,B,Ty), keys(H,Ty,B), vals(Dy*H,Ty,B) -> attnvec(H,B,Ty)
+
     #projection::Linear    # attnvec(H,B,Ty) -> proj(Vy,B,Ty)
     dropout::Real         # dropout probability
     #srcvocab::Vocab       # source language vocabulary
@@ -76,21 +78,28 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
     #tgtembed = Embed(tgtvocsz, tgtembsz)
     decoderinput = tgtembsz + hidden
     decoder = RNN(decoderinput, hidden; dropout=dropout, numLayers=layers)
+    
     #projection = Linear(hidden,tgtvocsz)
-    memory = bidirectional ? Memory(param(hidden,2hidden)) : Memory(1)
+    srcmemory = bidirectional ? Memory(param(hidden,2hidden)) : Memory(1)
+    tgtmemory = Memory(param(hidden,hidden))
+   
     wquery = 1
-    scale = param(1)
-    wattn = bidirectional ? param(hidden,3hidden) : param(hidden,2hidden)
-    attn = Attention(wquery,wattn,scale)
-    S2S(encoder,memory, decoder, attn, dropout) 
+    srcscale = param(1)
+    tgtscale = param(1)
+
+    srcwattn = bidirectional ? param(hidden,3hidden) : param(hidden,2hidden)
+    tgtwattn = param(hidden, 2hidden)
+
+    srcattn = Attention(wquery, srcwattn,srcscale)
+    tgtattn = Attention(wquery, tgtwattn, tgtscale)
+
+    S2S(encoder, srcmemory, decoder, tgtmemory, srcattn, tgtattn, dropout) 
 end
 
 #-
-H, Ex, Ey, L, Dx,Pdrop = 512, Ex, Ey, 2, 2, 0.33
+H, Ex, Ey, L, Dx, Dy, Pdrop = 512, Ex, Ey, 2, 2, 1, 0.33
 m = S2S(H,Ex,Ey; layers=L,bidirectional=(Dx==2),dropout=Pdrop)
 @testset "Testing S2S constructor" begin
-    #@test size(m.srcembed.w) == (Ex,Vx)
-    #@test size(m.tgtembed.w) == (Ey,Vy)
     @test m.encoder.inputSize == Ex
     @test m.decoder.inputSize == Ey + H
     @test m.encoder.hiddenSize == m.decoder.hiddenSize == H
@@ -98,13 +107,16 @@ m = S2S(H,Ex,Ey; layers=L,bidirectional=(Dx==2),dropout=Pdrop)
     @test m.encoder.numLayers == (Dx == 2 ? L÷2 : L)
     @test m.decoder.numLayers == L
     @test m.encoder.dropout == m.decoder.dropout == Pdrop
-    #@test size(m.projection.w) == (Vy,H)
-    @test size(m.memory.w) == (Dx == 2 ? (H,2H) : ())
-    @test m.attention.wquery == 1
-    @test size(m.attention.wattn) == (Dx == 2 ? (H,3H) : (H,2H))
-    @test size(m.attention.scale) == (1,)
-    #@test m.srcvocab === dtrn.src.vocab
-    #@test m.tgtvocab === dtrn.tgt.vocab
+
+    @test size(m.srcmemory.w) == (Dx == 2 ? (H,2H) : ())
+    @test m.srcattention.wquery == 1
+    @test size(m.srcattention.wattn) == (Dx == 2 ? (H,3H) : (H,2H))
+    @test size(m.srcattention.scale) == (1,)
+
+    @test size(m.tgtmemory.w) == (Dy == 2 ? (H,2H) : (H, H))
+    @test m.srcattention.wquery == 1
+    @test size(m.tgtattention.wattn) == (Dy == 2 ? (H,3H) : (H,2H))
+    @test size(m.tgtattention.scale) == (1,)
 end
 
 
@@ -125,12 +137,10 @@ end
 
 
 function (m::Memory)(x)
-    ## Your code here
     mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, size(x)[2:end]...)))
     vals = permutedims(x, (1,3,2))
     keys = mmul(m.w, vals)
     return (keys, vals)
-    ## Your code here
 end
 
 # You can use the following helper function for scaling and linear transformations of 3-D tensors:
@@ -140,9 +150,9 @@ mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, s
 @testset "Testing memory" begin
     H,D,B,Tx =  m.encoder.hiddenSize, m.encoder.direction+1, 64, 7
     x = KnetArray(randn(Float32,H*D,B,Tx))
-    k,v = m.memory(x)
+    k,v = m.srcmemory(x)
     @test v == permutedims(x,(1,3,2))
-    @test k == mmul(m.memory.w, v)
+    @test k == mmul(m.srcmemory.w, v)
 end
 
 
@@ -151,47 +161,50 @@ end
 # First prepare encode inputs
 # Concats embed of various features
 function prepare_encode_input(inputs)
-    ## inputs -> (Ex,B,T), (B,T) 
+    ## inputs dict ->  (Ex, B, Tx), (B,Tx) 
     bert_tokens, token_subword_index, tokens, pos_tags, must_copy_tags, chars, mask = inputs["bert_token"], inputs["token_subword_index"], inputs["token"], inputs["pos_tag"], inputs["must_copy_tag"], inputs["char"], inputs["mask"]
     encoder_inputs = []
-
     CNN_EMB_DIM = 100; DROPOUT = 0.33
     Tx, B = size(tokens)
+
     # (pytorch loads are 0-indexed, however knet 1-indexed)
     must_copy_tags = must_copy_tags .+1
     tokens = tokens .+1
     pos_tags = pos_tags .+1
 
+    # Bert embeddings
     if true #use_bert
         bert_embeddings = KnetArray{Float32}(zeros(BERT_EMB_DIM, Tx , B))
         push!(encoder_inputs, bert_embeddings)
     end
 
+    # Token embeddings
     embed = Embed(ENCODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
     token_embeddings = embed(tokens)
     push!(encoder_inputs, token_embeddings)
 
+    # Postag embeddings
     embed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
     pos_tag_embeddings = embed(pos_tags)
     push!(encoder_inputs, pos_tag_embeddings)
 
+    # Mustcopy embeddings
     if true #use_must_copy_embedding
         embed = Embed(MUSTCOPY_VOCAB_SIZE, MUSTCOPY_EMB_DIM)
         must_copy_tag_embeddings = embed(must_copy_tags)
         push!(encoder_inputs, must_copy_tag_embeddings)
     end
 
+    # CharCNN embeddings
     if true #use_char_cnn
         embed = Embed(ENCODER_CHAR_VOCAB_SIZE, CNN_EMB_DIM)
         # chars: num_chars, Tx, B
         char_embeddings = embed(chars) # -> CNN_EMB_DIM , num_chars , Tx, B 
         CNN_EMB_DIM, num_chars, T, B = size(char_embeddings) # -> CNN_EMB_DIM , num_chars , Tx , B
         char_embeddings = reshape(char_embeddings, :,num_chars, B*T) # -> CNN_EMB_DIM, num_chars , (B x T)
-
-        # Send it to charCNN which we ignore for now
+        #Send it to charCNN which we ignore for now
         #char_cnn_output = self.encoder_char_cnn(char_embeddings, None)
         #char_cnn_output = char_cnn_output.view(batch_size, Tx, -1)
-
         char_cnn_output = KnetArray{Float32}(zeros(CNN_EMB_DIM , Tx, B))
         push!(encoder_inputs, char_cnn_output)
     end
@@ -219,13 +232,13 @@ end
 # this pair to be used later by the attention mechanism.
 
 function encode(s::S2S, encoder_input, encoder_mask) 
-    ##  (Ex,B,Tx), (B,Tx) -> ((H,Tx,B), (H*D,Tx,B))
+    ##  (Ex,B,Tx), (B,Tx) -> ((Hx,Tx,B), (Hx*D,Tx,B))
     z = encoder_input               #; @size z (Ex, B, Tx)      
     s.encoder.h, s.encoder.c = 0, 0 #; #@sizes(s); (B,Tx) = size(src)
     z = s.encoder(z)                #; @size z (Hx*Dx,B,Tx)
     s.decoder.h = s.encoder.h       #; @size s.encoder.h (Hy,B,Ly)
     s.decoder.c = s.encoder.c       #; @size s.encoder.c (Hy,B,Ly)
-    z = s.memory(z)                 #; if z != (); @size z[1] (Hy,Tx,B); @size z[2] (Hx*Dx,Tx,B); end # z:(keys,values)
+    z = s.srcmemory(z)                 #; if z != (); @size z[1] (Hy,Tx,B); @size z[2] (Hx*Dx,Tx,B); end # z:(keys,values)
     return z
 end
 
@@ -275,15 +288,14 @@ function (a::Attention)(cell, mem)
     context = bmm(vals, alignments)          ; @size context (HxDx,Ty,B)
     context = ctrans(context)                ; @size context (HxDx,B,Ty)
     attnvec = mmul(a.wattn, vcat(cell,context)) ; @size attnvec (Hy,B,Ty)
-    return attnvec
+    return attnvec, alignments
     ## return tanh.(attnvec)
     ## doc says tanh, implementation does not have it, no tanh does better:
     ## https://github.com/tensorflow/nmt/issues/57
 end
 
-
 #-
-@testset "Testing attention" begin
+@testset "Testing src attention" begin
     enc_inputs, _, _, _ = prepare_batch_input(batch)
     H, (_, B) = m.encoder.hiddenSize, size(enc_inputs["token"])
 
@@ -291,11 +303,10 @@ end
     key, val = encode(m, encoder_input, encoder_mask)
     Knet.seed!(1)
     x = KnetArray(randn(Float32,H,B,5))
-    y = m.attention(x, (key, val))
+    y, yalignments = m.srcattention(x, (key, val))
     @test size(y) == size(x)
     #@test norm(y) ≈ 808.381f0
 end
-
 
 
 # ## Part 5. Decoder
@@ -311,9 +322,9 @@ end
 # First prepare decode inputs
 # Concats embed of various features
 function prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
+    ## enc_inputs, dec_inputs, parser_inputs dicts ->  (Ey, B, Ty)
     tokens, pos_tags, chars, corefs, mask, tgt_mask = dec_inputs["token"], dec_inputs["pos_tag"], dec_inputs["char"], dec_inputs["coref"], enc_inputs["mask"], parser_inputs["mask"]
     decoder_inputs = []
-
     CNN_EMB_DIM = 100; DROPOUT = 0.33
     Ty, B = size(tokens)
 
@@ -326,29 +337,26 @@ function prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
     token_embeddings = embed(tokens)
     push!(decoder_inputs, token_embeddings)
 
-    # Pos tag embeddings
+    # Postag embeddings
     embed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
     pos_tag_embeddings = embed(pos_tags)
     push!(decoder_inputs, pos_tag_embeddings)
-
 
     # Coref embeddings
     embed = Embed(DECODER_COREF_VOCAB_SIZE, COREF_EMB_DIM)
     coref_embeddings = embed(corefs)
     push!(decoder_inputs, coref_embeddings)
 
-
+    # CharCNN embeddings
     if true #use_char_cnn
         embed = Embed(DECODER_CHAR_VOCAB_SIZE, CNN_EMB_DIM)
         # chars: num_chars, Tx, B
         char_embeddings = embed(chars) # -> CNN_EMB_DIM , num_chars , Ty, B 
         CNN_EMB_DIM, num_chars, Ty, B = size(char_embeddings) # -> CNN_EMB_DIM , num_chars , Ty , B
         char_embeddings = reshape(char_embeddings, :,num_chars, B*Ty) # -> CNN_EMB_DIM, num_chars , (B, T)
-
         # Send it to charCNN which we ignore for now
         #char_cnn_output = self.encoder_char_cnn(char_embeddings, None)
         #char_cnn_output = char_cnn_output.view(batch_size, Ty, -1)
-
         char_cnn_output = KnetArray{Float32}(zeros(CNN_EMB_DIM , Ty, B))
         push!(decoder_inputs, char_cnn_output)
     end
@@ -368,26 +376,29 @@ end
 end
 
 
-function decode(s::S2S, decoder_input, mem, prev)
-    ##  (Ey, B, Ty), ((Hy,Tx,B), (Hx*Dx,Tx,B)), (Hy,B,Ty) -> (Hy,B,Ty/1)
+function decode(s::S2S, decoder_input, srcmem, prev)
+    ##  (Ey, B, Ty), ((Hy,Tx,B), (Hx*Dx,Tx,B)), (Hy,B,Ty) -> (Hy,B,Ty), (Hy,B,Ty)
     z = decoder_input                   #; (B,Ty) = size(decoder_input); @sizes(s); @size z (Ey,B,Ty)
     z = vcat(z, prev)                   #; @size z (Ey+Hy,B,Ty)
     z = s.decoder(z)                    #; @size z (Hy,B,Ty)
-    z = s.attention(z, mem)             #; @size z (Hy,B,Ty)
-    return z
+    src_attention, srcalignments = s.srcattention(z, srcmem)             #; @size src_attention (Hy,B,Ty)
+    tgtmem = s.tgtmemory(z)
+    tgt_attention, tgtalignments = s.tgtattention(z, tgtmem)             #; @size tgt_attention (Hy,B,Ty)
+    return z, src_attention, srcalignments, tgt_attention, tgtalignments
 end
 
 #-
 @testset "Testing decoder" begin
-    enc_inputs, dec_inputs, _, parser_inputs = prepare_batch_input(batch)
+    enc_inputs, dec_inputs, generator_inputs , parser_inputs = prepare_batch_input(batch)
+    Hy, (_, B), Ty = m.decoder.hiddenSize, size(dec_inputs["token"]), 2
     encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
     key, val = encode(m, encoder_input, encoder_mask)
     Knet.seed!(1)
     decoder_input = prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
     cell = randn!(similar(key, size(key,1), size(key,3), 2))
-    cell = decode(m, decoder_input, (key,val), cell)
-    Hy, (_, B), Ty = m.decoder.hiddenSize, size(dec_inputs["token"]), 2
-    @test size(cell) == (Hy,B, 2)
-    #@test norm(cell) ≈ 131.21631f0
+    hiddens, src_attn_vector, srcalignments, tgt_attn_vector, tgtalignments = decode(m, decoder_input, (key,val), cell)
+    @test size(hiddens) == (Hy,B, 2)
+    @test size(src_attn_vector) == (Hy,B, 2)
+    @test size(tgt_attn_vector) == (Hy,B, 2)
 end
 

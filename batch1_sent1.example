@@ -1,9 +1,0 @@
-# ::id bolt-eng-DF-170-181103-8883379_0064.3 ::date 2015-11-15T14:34:59 ::annotator SDL-AMR-09 ::preferred
-# ::snt is not a "topic".
-# ::tokens ["is", "not", "a", "\"", "topic", "\"", "."]
-# ::lemmas ["be", "not", "a", "\"", "topic", "\"", "."]
-# ::pos_tags ["VBZ", "RB", "DT", "``", "NN", "''", "."]
-# ::ner_tags ["O", "O", "O", "O", "O", "O", "O"]
-# ::abstract_map {}
-# ::save-date Sun Nov 15, 2015 ::file bolt-eng-DF-170-181103-8883379_0064_3.txt
-(t / topic)
