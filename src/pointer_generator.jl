@@ -1,3 +1,4 @@
+include("s2s.jl")
 include("linear.jl")
 
 _usegpu = gpu()>=0
@@ -42,6 +43,18 @@ end
     @test size(pg.projection.w) == (vocabsize, Hy)
 end
 
+## remove here
+vocab_pad_idx = 1 # 0th index
+vocabsize = 12202
+enc_inputs, dec_inputs, generator_inputs , parser_inputs = prepare_batch_input(batch)
+encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
+key, val = encode(m, encoder_input, encoder_mask)
+decoder_input = prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
+cell = randn!(similar(key, size(key,1), size(key,3), 2))
+hiddens, _, srcalignments, _, tgtalignments = decode(m, decoder_input, (key,val), cell)
+Hy = size(hiddens,1)
+pg = PointerGenerator(Hy, vocabsize, 1e-20)
+
 
 source_attentions = srcalignments
 source_attention_maps = generator_inputs["copy_attention_maps"]
@@ -64,12 +77,15 @@ target_attention_maps = generator_inputs["coref_attention_maps"]
 #
 
 ## TODO : Invalid indexes part
-function (pg::PointerGenerator)(hiddens, source_attentions, source_attention_maps, target_attentions, target_attention_maps, invalid_indexes=None):
+function (pg::PointerGenerator)(hiddens, source_attentions, source_attention_maps, target_attentions, target_attention_maps; invalid_indexes=None)
     # hiddens: (Hy, B, Ty)
     # source_attentions: (Tx,Ty,B) 
     # source_attention_maps: (src_dynamic_vocabsize, Tx, B)
     # target_attentions: (Ty,Ty,B) 
     # target_attention_maps: (tgt_dynamic_vocabsize, Ty, B)
+    # -> probs: (Ty, vocabsize + src_dynamic_vocabsize + tgt_dynamic_vocabsize, B)
+    # -> predictions: (Ty, 1, B)
+    # -> src_dynamic_vocabsize, tgt_dynamic_vocabsize
 
     Hy, B, Ty = size(hiddens) 
     source_dynamic_vocab_size = size(source_attention_maps, 1)

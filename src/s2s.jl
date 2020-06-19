@@ -15,19 +15,13 @@ struct Memory; w; end
 struct Attention; wquery; wattn; scale; end
 
 struct S2S
-    #srcembed::Embed       # encinput(B,Tx) -> srcembed(Ex,B,Tx)
-    encoder::RNN          # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
+    encoder::RNN             # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
     srcmemory::Memory        # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
-    #tgtembed::Embed       # decinput(B,Ty) -> tgtembed(Ey,B,Ty)
-    decoder::RNN          # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
+    decoder::RNN             # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
     tgtmemory::Memory        # enccell(Dy*Hy,B,Ty) -> keys(H,Ty,B), vals(Dy*H,Ty,B)
     srcattention::Attention  # deccell(H,B,Ty), keys(H,Tx,B), vals(Dx*H,Tx,B) -> attnvec(H,B,Ty)
     tgtattention::Attention  # deccell(H,B,Ty), keys(H,Ty,B), vals(Dy*H,Ty,B) -> attnvec(H,B,Ty)
-
-    #projection::Linear    # attnvec(H,B,Ty) -> proj(Vy,B,Ty)
-    dropout::Real         # dropout probability
-    #srcvocab::Vocab       # source language vocabulary
-    #tgtvocab::Vocab       # target language vocabulary
+    dropout::Real            # dropout probability
 end
 
 
@@ -70,16 +64,12 @@ Ey = TOKEN_EMB_DIM + POS_EMB_DIM + COREF_EMB_DIM + CNN_EMB_DIM
 
 function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=false, dropout=0)
     @assert !bidirectional || iseven(layers) "layers should be even for bidirectional models"
-    #srcvocsz,tgtvocsz = length.((srcvocab.i2w,tgtvocab.i2w))
-    #srcembed = Embed(srcvocsz, srcembsz)
     encoderlayers = (bidirectional ? layers ÷ 2 : layers)
     encoder = RNN(srcembsz, hidden; dropout=dropout, numLayers=encoderlayers, bidirectional=bidirectional)
-    
-    #tgtembed = Embed(tgtvocsz, tgtembsz)
+   
     decoderinput = tgtembsz + hidden
     decoder = RNN(decoderinput, hidden; dropout=dropout, numLayers=layers)
     
-    #projection = Linear(hidden,tgtvocsz)
     srcmemory = bidirectional ? Memory(param(hidden,2hidden)) : Memory(1)
     tgtmemory = Memory(param(hidden,hidden))
    
@@ -377,13 +367,13 @@ end
 
 
 function decode(s::S2S, decoder_input, srcmem, prev)
-    ##  (Ey, B, Ty), ((Hy,Tx,B), (Hx*Dx,Tx,B)), (Hy,B,Ty) -> (Hy,B,Ty), (Hy,B,Ty)
-    z = decoder_input                   #; (B,Ty) = size(decoder_input); @sizes(s); @size z (Ey,B,Ty)
-    z = vcat(z, prev)                   #; @size z (Ey+Hy,B,Ty)
-    z = s.decoder(z)                    #; @size z (Hy,B,Ty)
-    src_attention, srcalignments = s.srcattention(z, srcmem)             #; @size src_attention (Hy,B,Ty)
+    # (Ey, B, Ty), ((Hy,Tx,B), (Hx*Dx,Tx,B)), (Hy,B,Ty) -> (Hy,B,Ty), (Hy,B,Ty)
+    z = decoder_input                  
+    z = vcat(z, prev)                  
+    z = s.decoder(z)                   
+    src_attention, srcalignments = s.srcattention(z, srcmem)            
     tgtmem = s.tgtmemory(z)
-    tgt_attention, tgtalignments = s.tgtattention(z, tgtmem)             #; @size tgt_attention (Hy,B,Ty)
+    tgt_attention, tgtalignments = s.tgtattention(z, tgtmem)            
     return z, src_attention, srcalignments, tgt_attention, tgtalignments
 end
 
