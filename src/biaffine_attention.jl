@@ -14,56 +14,63 @@ function BiaffineAttention(encoder_inputsize::Int, decoder_inputsize::Int; num_l
     we = param(num_labels, encoder_inputsize)
     wd = param(num_labels, decoder_inputsize)
     b  = param(num_labels,1,1)
-    u  = param(decoder_inputsize, encoder_inputsize, edge_node_m)
+    u  = param(decoder_inputsize, encoder_inputsize, num_labels)
     BiaffineAttention(we, wd, b, u)
 end
 
 
-ba = BiaffineAttention(256, 256)
 
-    
-   
-
-# * `e_input`: the encoder input, edge_node_h
-# * `d_input`: the decoder input, edge_node_m
+# * `input_e`: the encoder input, edgenode_h
+# * `input_d`: the decoder input, edgenode_m
 # * `mask_e`: the encoder mask
 # * `mask_d`: the decoder mask
 #
-function (ba::BiaffineAttention)(e_input, d_input; e_mask=nothing, d_mask=nothing)
-    # e_input: (edgenode_hiddensize, B, Tencoder)
-    # d_input: (edgenode_hiddensize, B, Tdecoder)
-    # e_mask: (Ty, B)
-    # d_mask: (Ty, B)
+function (ba::BiaffineAttention)(input_e, input_d; mask_e=nothing, mask_d=nothing)
+    # input_e: (encoder_inputsize, B, Tencoder)
+    # input_d: (decoder_inputsize, B, Tdecoder)
+    # mask_e: (Ty, B)
+    # mask_d: (Ty, B)
+    # -> output: (B, Tencoder, Tdecoder, num_labels)
+
+    _, B, Tencoder = size(input_e)
+    _, B, Tdecoder = size(input_d)
+
+    decoder_inputsize, encoder_inputsize, num_labels = size(ba.u)
+
+    out_e = mmul(ba.we, input_e)                                                # -> (num_labels, B, Tencoder)
+    out_d = mmul(ba.wd, input_d)                                                # -> (num_labels, B, Tdecoder)
 
 
-    _, B, Tencoder = e_input
-    _, B, Tdecoder = d_input
+    input_d = permutedims(input_d, [2,3,1])                                     # -> (B,Tdecoder, decoder_inputsize)
+    input_d = reshape(input_d, (size(input_d,1) * size(input_d,2),:))           # -> (B*Tdecoder, decoder_inputsize)
 
-    # TODO: Check these operations !!
-    out_e = mmul(ba.we, e_input) # -> (num_labels, B, Tencoder)
-    out_d = mmul(ba.wd, d_input) # -> (num_labels, B, Tdecoder)
+    a = reshape(ba.u, size(ba.u,1),size(ba.u,2) * size(ba.u,3))                 # -> (decoder_inputsize, decoder_inputsize*num_labels)
+    output = input_d * a                                                        # -> (B*Tdecoder, decoder_inputsize*num_labels)
+    output = reshape(output, (B, Tdecoder, decoder_inputsize, num_labels))      # -> (B,Tdecoder, decoder_inputsize,num_labels)
 
+    output = permutedims(output, [2,4,3,1])                                     # -> (Tdecoder,num_labels, decoder_inputsize, B)
+    output = reshape(output, (size(output,1) * 
+                size(output,2), size(output,3), size(output,4)))                # -> (Tdecoder*num_labels, decoder_inputsize, B)
+    input_e = permutedims(input_e, [1,3,2])                                     # -> (decoder_inputsize, Tencoder, B)
+    output = bmm(output,input_e)                                                # -> (Tdecoder*num_labels, Tencoder, B)
+    output = reshape(output, (B, Tencoder, Tdecoder, num_labels))               # -> (B, Tencoder, Tdecoder, num_labels)
+    out_e = permutedims(out_e, [2,3,1])                                         # -> (B, Tencoder, num_labels)
+    out_e = reshape(out_e, (size(out_e,1), size(out_e,2), size(out_e,3), 1))    # -> (B, Tencoder, num_labels, 1)
 
-    d_input = reshape(d_input, (size(d_input,1),1,size(d_input,2),:))  # -> (edgenode_hiddensize, 1, B, Tdecoder)
+    output = output .+out_e                                                     # -> (B, Tencoder, Tdecoder, num_labels)
+    output = permutedims(output, [1,3,2,4])                                     # -> (B, Tdecoder, Tencoder, num_labels)
+    
+    out_d = permutedims(out_d, [2,3,1])                                         # -> (B, Tdecoder, num_labels)
+    out_d = reshape(out_d, (size(out_d,1), size(out_d,2), size(out_d,3), 1))    # -> (B, Tdecoder, num_labels,1)
 
-        # output shape [batch, num_label, length_decoder, length_encoder]
-        if self.biaffine:
-            # compute bi-affine part
-            # [batch, 1, length_decoder, input_size_decoder] * [num_labels, input_size_decoder, input_size_encoder]
-            # output shape [batch, num_label, length_decoder, input_size_encoder]
-            output = torch.matmul(input_d.unsqueeze(1), self.U)
-            # [batch, num_label, length_decoder, input_size_encoder] * [batch, 1, input_size_encoder, length_encoder]
-            # output shape [batch, num_label, length_decoder, length_encoder]
-            output = torch.matmul(output, input_e.unsqueeze(1).transpose(2, 3))
+    output = output .+ out_d                                                    # -> (B, Tencoder, Tdecoder, num_labels)
+    output = output .+ ba.b
 
-            output = output + out_d + out_e + self.b
-        else:
-            output = out_d + out_d + self.b
-
-        if mask_d is not None and mask_e is not None:
-            output = output * mask_d.unsqueeze(1).unsqueeze(3) * mask_e.unsqueeze(1).unsqueeze(2)
-
-        return output
-
-
+    if mask_d === nothing && mask_e === nothing
+        mask_d = permutedims(mask_d, [2,1])                                     # -> (B, Tdecoder)
+        output = output .* mask_d                                               # -> (B, Tencoder, Tdecoder, num_labels)
+        mask_e = permutedims(mask_e, [2,1])                                     # -> (B, Tencoder)
+        output = output .* mask_e                                               # -> (B, Tencoder, Tdecoder, num_labels)
+    end
+    return output
 end
