@@ -28,4 +28,3 @@ embed = Embed(vocabsize, embedsize)
 input = rand(1:100, T, B)
 output = embed(input)
 @test size(output) == (embedsize, T, B)
-#@test norm(output) ≈ 0.59804f0

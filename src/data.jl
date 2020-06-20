@@ -20,7 +20,7 @@ mutable struct batchdata
 end
 
 function read_batches_from_h5(file)
-    ## For now data has 3 batches
+    ## For now data has only 5 batches
     data = h5open(file, "r") do file
         read(file)
     end
@@ -78,7 +78,7 @@ function prepare_batch_input(batch)
     decoder_inputs["coref"] = decoder_coref_inputs
 
 
-    ## Generator inputs, TODO check here again!!!
+    ## Generator inputs, TODO: check here again!
     # [batch, num_tokens]
     vocab_targets = batch["decoder_tokens"][2:end,:]
     # [batch, num_tokens]

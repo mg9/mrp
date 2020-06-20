@@ -11,7 +11,7 @@ struct PointerGenerator
 end
 
 
-# ## Part 1. Model constructor
+# ## Model constructor
 #
 # The `PointerGenerator` constructor takes the following arguments:
 # * `hidden`: size of the hidden vectors of the decoder
@@ -76,7 +76,7 @@ target_attention_maps = generator_inputs["coref_attention_maps"]
 #   `invalid_indexes`: indexes which are not considered in prediction.
 #
 
-## TODO : Invalid indexes part
+## TODO: Invalid indexes part
 function (pg::PointerGenerator)(hiddens, source_attentions, source_attention_maps, target_attentions, target_attention_maps; invalid_indexes=None)
     # hiddens: (Hy, B, Ty)
     # source_attentions: (Tx,Ty,B) 
@@ -101,7 +101,7 @@ function (pg::PointerGenerator)(hiddens, source_attentions, source_attention_map
     p_copy_target = reshape(p[2, :], (B*Ty, 1))      # -> (B*Ty,1)
     p_copy_target = reshape(p_copy_target, (Ty,1,B)) # -> (Ty,1,B)
 
-    p_generate = reshape(p[3, :], (B*Ty, 1))         # -> (B*Ty, 1)
+    p_generate = reshape(p[3, :], (B*Ty, 1))         # -> (B*Ty,1)
     p_generate = reshape(p_generate, (Ty,1,B))       # -> (Ty,1,B)
 
 

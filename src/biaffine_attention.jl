@@ -4,7 +4,7 @@ _atype = ifelse(_usegpu, KnetArray{Float32}, Array{Float64})
 
 struct BiaffineAttention; we; wd; b; u; end
 
-# ## Part 1. Model constructor
+# ## Model constructor
 #
 # The `BiaffineAttention` constructor takes the following arguments:
 # * `encoder_inputsize`: the dimension of the encoder input
