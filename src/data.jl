@@ -41,11 +41,6 @@ function read_batches_from_h5(file)
 end
 
 
-
-batches = read_batches_from_h5("../data/data.h5")
-batch = batches[1]
-
-
 function prepare_batch_input(batch)
     encoder_inputs = Dict(); decoder_inputs = Dict(); generator_inputs = Dict(); parser_inputs = Dict()
     

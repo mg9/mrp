@@ -27,9 +27,6 @@ function (bl::BiLinear)(input_left, input_right)
     # input_left:  (edgelabel_hiddensize, B, Tencoder):  edgelabel_h
     # input_right: (edgelabel_hiddensize, B, Tencoder):  edgelabel_m
     # -> output: (B, Tencoder, out_features)
-   
-    input_left = edgelabel_h
-    input_right = edgelabel_m
 
     left_size  = size(input_left)
     right_size = size(input_right)

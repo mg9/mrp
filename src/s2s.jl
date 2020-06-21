@@ -25,25 +25,6 @@ struct S2S
 end
 
 
-BERT_EMB_DIM = 768
-TOKEN_EMB_DIM = 300 #glove
-POS_EMB_DIM = 100
-CNN_EMB_DIM = 100
-MUSTCOPY_EMB_DIM = 50
-COREF_EMB_DIM = 50
-
-POSTAG_VOCAB_SIZE = 51
-ENCODER_TOKEN_VOCAB_SIZE = 18002
-ENCODER_CHAR_VOCAB_SIZE = 125
-MUSTCOPY_VOCAB_SIZE = 3
-
-DECODER_TOKEN_VOCAB_SIZE = 12202
-DECODER_CHAR_VOCAB_SIZE = 87
-DECODER_COREF_VOCAB_SIZE = 500
-
-Ex = BERT_EMB_DIM + TOKEN_EMB_DIM + POS_EMB_DIM + MUSTCOPY_EMB_DIM + CNN_EMB_DIM
-Ey = TOKEN_EMB_DIM + POS_EMB_DIM + COREF_EMB_DIM + CNN_EMB_DIM
-
 # ## Part 1. Model constructor
 #
 # The `S2S` constructor takes the following arguments:
@@ -86,9 +67,27 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
     S2S(encoder, srcmemory, decoder, tgtmemory, srcattn, tgtattn, dropout) 
 end
 
-#-
-H, Ex, Ey, L, Dx, Dy, Pdrop = 512, Ex, Ey, 2, 2, 1, 0.33
+#- Test kit
+H, Ex, Ey, L, Dx, Dy, Pdrop = 512, 1318, 550, 2, 2, 1, 0.33
 m = S2S(H,Ex,Ey; layers=L,bidirectional=(Dx==2),dropout=Pdrop)
+batches = read_batches_from_h5("../data/data.h5")
+tbatch = batches[1]
+BERT_EMB_DIM = 768
+TOKEN_EMB_DIM = 300 #glove
+POS_EMB_DIM = 100
+CNN_EMB_DIM = 100
+MUSTCOPY_EMB_DIM = 50
+COREF_EMB_DIM = 50
+POSTAG_VOCAB_SIZE = 51
+ENCODER_TOKEN_VOCAB_SIZE = 18002
+ENCODER_CHAR_VOCAB_SIZE = 125
+MUSTCOPY_VOCAB_SIZE = 3
+DECODER_TOKEN_VOCAB_SIZE = 12202
+DECODER_CHAR_VOCAB_SIZE = 87
+DECODER_COREF_VOCAB_SIZE = 500
+Ex = BERT_EMB_DIM + TOKEN_EMB_DIM + POS_EMB_DIM + MUSTCOPY_EMB_DIM + CNN_EMB_DIM
+Ey = TOKEN_EMB_DIM + POS_EMB_DIM + COREF_EMB_DIM + CNN_EMB_DIM
+
 @testset "Testing S2S constructor" begin
     @test m.encoder.inputSize == Ex
     @test m.decoder.inputSize == Ey + H
@@ -207,7 +206,8 @@ end
 
 #-
 @testset "Testing prepare_encode_input" begin
-    enc_inputs, _, _, _ = prepare_batch_input(batch)
+    Ex= 1318; Ey=550
+    enc_inputs, _, _, _ = prepare_batch_input(tbatch)
     Tx, B = size(enc_inputs["token"])
     encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
     @test size(encoder_input) == (Ex, B, Tx)
@@ -234,7 +234,7 @@ end
 
 #-
 @testset "Testing encoder" begin
-    enc_inputs, _, _, _ = prepare_batch_input(batch)
+    enc_inputs, _, _, _ = prepare_batch_input(tbatch)
     Tx, B = size(enc_inputs["token"])
     encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
     key, val = encode(m, encoder_input, encoder_mask)
@@ -286,9 +286,8 @@ end
 
 #-
 @testset "Testing src attention" begin
-    enc_inputs, _, _, _ = prepare_batch_input(batch)
+    enc_inputs, _, _, _ = prepare_batch_input(tbatch)
     H, (_, B) = m.encoder.hiddenSize, size(enc_inputs["token"])
-
     encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
     key, val = encode(m, encoder_input, encoder_mask)
     Knet.seed!(1)
@@ -359,7 +358,7 @@ end
 
 #-
 @testset "Testing prepare_decode_input" begin
-    enc_inputs, dec_inputs, _, parser_inputs = prepare_batch_input(batch)
+    enc_inputs, dec_inputs, _, parser_inputs = prepare_batch_input(tbatch)
     Ty, B = size(dec_inputs["token"])
     decoder_input = prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
     @test size(decoder_input) == (Ey, B, Ty)
@@ -367,7 +366,15 @@ end
 
 
 function decode(s::S2S, decoder_input, srcmem, prev)
-    # (Ey, B, Ty), ((Hy,Tx,B), (Hx*Dx,Tx,B)), (Hy,B,Ty) -> (Hy,B,Ty), (Hy,B,Ty)
+    # decoder_input: (Ey,B,Ty) 
+    # srcmem:        ((Hy,Tx,B),(Hx*Dx,Tx,B))
+    # prev:          (Hy,B,Ty) 
+    # -> z(hiddens):      (Hy,B,Ty)
+    # -> src_attn_vector: (Hy,B,Ty)
+    # -> srcalignments:   (Tx,Ty,B)
+    # -> tgt_attn_vector: (Hy,B,Ty)
+    # -> tgtalignments:   (Ty,Ty,B)
+
     z = decoder_input                  
     z = vcat(z, prev)                  
     z = s.decoder(z)                   
@@ -379,7 +386,7 @@ end
 
 #-
 @testset "Testing decoder" begin
-    enc_inputs, dec_inputs, generator_inputs , parser_inputs = prepare_batch_input(batch)
+    enc_inputs, dec_inputs, generator_inputs , parser_inputs = prepare_batch_input(tbatch)
     Hy, (_, B), Ty = m.decoder.hiddenSize, size(dec_inputs["token"]), 2
     encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
     key, val = encode(m, encoder_input, encoder_mask)
