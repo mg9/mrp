@@ -228,7 +228,7 @@ function encode(s::S2S, encoder_input, encoder_mask)
     z = s.encoder(z)                #; @size z (Hx*Dx,B,Tx)
     s.decoder.h = s.encoder.h       #; @size s.encoder.h (Hy,B,Ly)
     s.decoder.c = s.encoder.c       #; @size s.encoder.c (Hy,B,Ly)
-    z = s.srcmemory(z)                 #; if z != (); @size z[1] (Hy,Tx,B); @size z[2] (Hx*Dx,Tx,B); end # z:(keys,values)
+    z = s.srcmemory(z)              #; if z != (); @size z[1] (Hy,Tx,B); @size z[2] (Hx*Dx,Tx,B); end # z:(keys,values)
     return z
 end
 
@@ -375,8 +375,7 @@ function decode(s::S2S, decoder_input, srcmem, prev)
     # -> tgt_attn_vector: (Hy,B,Ty)
     # -> tgtalignments:   (Ty,Ty,B)
 
-    z = decoder_input                  
-    z = vcat(z, prev)                  
+    z = vcat(decoder_input, prev)                  
     z = s.decoder(z)                   
     src_attention, srcalignments = s.srcattention(z, srcmem)            
     tgtmem = s.tgtmemory(z)
@@ -398,4 +397,3 @@ end
     @test size(src_attn_vector) == (Hy,B, 2)
     @test size(tgt_attn_vector) == (Hy,B, 2)
 end
-

@@ -20,9 +20,6 @@ function BiLinear(left_features::Int, right_features::Int, out_features::Int)
 end
 
 
-bl = BiLinear(128, 128, 141)
-
-
 function (bl::BiLinear)(input_left, input_right)
     # input_left:  (edgelabel_hiddensize, B, Tencoder):  edgelabel_h
     # input_right: (edgelabel_hiddensize, B, Tencoder):  edgelabel_m

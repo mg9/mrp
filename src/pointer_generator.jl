@@ -73,7 +73,11 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     # -> src_dynamic_vocabsize, tgt_dynamic_vocabsize
 
     Hy, B, Ty = size(hiddens) 
+    loss = sum(hiddens)
+    return loss 
+
     hiddens = reshape(hiddens, (:,B *Ty)) # -> (H, B*Ty) 
+
     src_dynamic_vocabsize = size(src_attention_maps, 1)
     tgt_dynamic_vocabsize = size(tgt_attention_maps, 1)
 
@@ -89,16 +93,17 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     p_generate = reshape(p[3, :], (B*Ty, 1))         # -> (B*Ty,1)
     p_generate = reshape(p_generate, (Ty,1,B))       # -> (Ty,1,B)
 
-
+    #return 1
     # Pgen: Probability distribution over the vocabulary.
     scores = pg.projection(hiddens)                                  # -> (vocabsize, B*Ty)
     scores = permutedims(scores, [2,1])                              # -> (B*Ty, vocabsize)
-    scores[:, vocab_pad_idx] = -Inf32
+    #scores[:, vocab_pad_idx] .+= -Inf32                             # TODO: fix here for diff
     vocab_probs = softmax(scores, dims=2)                            # TODO: is it okay?
     vocab_probs = reshape(vocab_probs, (Ty, vocabsize, B))           # -> (Ty, vocabsize, B)
     dummy = convert(_atype, zeros(1,size(vocab_probs,2),1))
     p_generate = p_generate .+ dummy                                 # -> (Ty, vocabsize, B)
     scaled_vocab_probs = vocab_probs .* p_generate                   # -> (Ty, vocabsize, B)
+
 
     
     # Probability distribution over the dynamic vocabulary.
@@ -122,7 +127,6 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     tgt_attention_maps = permutedims(tgt_attention_maps, [2,1,3])                                    # -> (Ty, tgtdynamic_vocabsize, B)
     scaled_copy_target_probs = bmm(scaled_tgt_attentions, convert(_atype,tgt_attention_maps))        # -> (Ty, tgtdynamic_vocabsize, B)
 
-
     probs = cat(scaled_vocab_probs, scaled_copy_source_probs, scaled_copy_target_probs, dims=2)      # -> (Ty,vocabsize+dynamic_vocabsize,B)
     predictions = argmax(probs, dims=2)                                                              # -> (Ty,1,B)
 
@@ -132,15 +136,12 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     #  _probs[vocab_size + source_dynamic_vocab_size, :, :] = 0
     #_, predictions = _probs.max(2)
 
-
-   
     predictions = reshape(predictions, (:, size(predictions,2)*size(predictions,3)))                 # -> (Ty, B)
     coverage_records = nothing                                                                       # TODO: fix here and use coverage records
-
-    loss = calcloss(pg, probs, predictions, src_attentions, generate_targets, src_copy_targets, 
-            tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records)     
-
-    return loss
+    
+    #loss = calcloss(pg, probs, predictions, src_attentions, generate_targets, src_copy_targets, 
+    #        tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records)     
+    return 0
 end
 
 

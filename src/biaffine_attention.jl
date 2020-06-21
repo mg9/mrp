@@ -19,7 +19,6 @@ function BiaffineAttention(encoder_inputsize::Int, decoder_inputsize::Int; num_l
 end
 
 
-
 # * `input_e`: the encoder input, edgenode_h
 # * `input_d`: the decoder input, edgenode_m
 # * `mask_e`: the encoder mask
@@ -39,7 +38,6 @@ function (ba::BiaffineAttention)(input_e, input_d; mask_e=nothing, mask_d=nothin
 
     out_e = mmul(ba.we, input_e)                                                # -> (num_labels, B, Tencoder)
     out_d = mmul(ba.wd, input_d)                                                # -> (num_labels, B, Tdecoder)
-
 
     input_d = permutedims(input_d, [2,3,1])                                     # -> (B,Tdecoder, decoder_inputsize)
     input_d = reshape(input_d, (size(input_d,1) * size(input_d,2),:))           # -> (B*Tdecoder, decoder_inputsize)

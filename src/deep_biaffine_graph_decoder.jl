@@ -46,22 +46,6 @@ end
     @test size(g.edgenode_h_linear(hinput),1) == (edgenode_hidden_size)
 end
 
-#=
-#-remove here
-enc_inputs, dec_inputs, generator_inputs, parser_inputs = prepare_batch_input(batch)
-encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
-mem = encode(m, encoder_input, encoder_mask)
-decoder_input = prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
-cell = fill!(similar(mem[1], size(mem[1],1), size(mem[1],3), 2), 0) #TODO: give input 1by1, cell should be (Hy, B, 1)
-hiddens, src_attn_vector, srcalignments, tgt_attn_vector, tgtalignments = decode(m, decoder_input, mem, cell)
-edge_heads = parser_inputs["edge_heads"]     
-edgelabels = parser_inputs["edge_labels"]   
-corefs = parser_inputs["corefs"]            
-mask = parser_inputs["mask"]                 
-# size.([hiddens, edge_heads, edgelabels, corefs, mask])
-# Hy, B, Ty = size(hiddens)
-#g(hiddens, edge_heads, edgelabels, corefs, mask)
-=#
 
 function (bg::DeepBiaffineGraphDecoder)(hiddens, edge_heads, edgelabels, corefs, mask)
     # hiddens:      (Hy, B, Ty) memory_bank?
@@ -70,7 +54,6 @@ function (bg::DeepBiaffineGraphDecoder)(hiddens, edge_heads, edgelabels, corefs,
     # corefs:       (Ty, B)
     # mask:         (Ty, B)
 
-    loss = 0.0
     # Exclude BOS symbol
     hiddens = hiddens[:,:,2:end]
     corefs = corefs[2:end, :]
@@ -80,11 +63,50 @@ function (bg::DeepBiaffineGraphDecoder)(hiddens, edge_heads, edgelabels, corefs,
     num_nodes  = size(mask, 1)
     hiddens, edge_heads, edgelabels, corefs, mask = add_head_sentinel(hiddens, edge_heads, edgelabels, corefs, mask) # -> size(hiddens,3)+=1, Tencoder=Tdecoder=Ty+1  
     (edgenode_h, edgenode_m), (edgelabel_h, edgelabel_m) = encode(bg, hiddens)
-    edgenode_scores = get_edgenode_scores(bg, edgenode_h, edgenode_m, mask)   # -> (B, Tencoder, Tdecoder*num_labels)
+    edgenode_scores = get_edgenode_scores(bg, edgenode_h, edgenode_m, mask)                                          # -> (B, Tencoder, Tdecoder*num_labels)
     pred_edge_heads, pred_edge_labels  = greedy_decode(bg, edgelabel_h, edgelabel_m, edgenode_scores, mask)
-    #TODO: calculate and return loss
+    
+    loss = calcloss(bg, edgelabel_h, edgelabel_m, edgenode_scores, edge_heads, edgelabels, mask)  
     return loss
 end
+
+
+function calcloss(bg, edgelabel_h, edgelabel_m, edgenode_scores, edge_heads, edgelabels, mask)
+    # edgelabel_h:      (edgelabel_hiddensize, B, Tencoder)
+    # edgelabel_m:      (edgelabel_hiddensize, B, Tencoder)
+    # edgenode_scores:  (B, Tencoder, Tdecoder)
+    # edge_heads:       (Tdecoder or Tencoder?, B) 
+    # edgelabels:       (Tdecoder or Tencoder?, B)
+    # mask:             (Tencoder, B)
+    
+    B, max_len, _ = size(edgenode_scores)
+
+    #TODO: implement here 
+    #edge_node_log_likelihood = masked_log_softmax(                                     # -> should be (B, Tencoder, Tdecoder)
+    #    edgenode_scores, mask.unsqueeze(2) + mask.unsqueeze(1), dim=1)
+    edgenode_log_likelihood = edgenode_scores
+
+    edgelabel_scores = get_edgelabel_scores(bg, edgelabel_h, edgelabel_m, edge_heads)    # -> edgelabel_scores: (B, Tencoder, numlabels)
+    edgelabel_log_likelihood = log.(softmax(edgelabel_scores, dims=3))
+    batch_index = reshape(collect(1:B), (B,1))                                           # -> (B,1): Create indexing matrix for batch
+    modifier_index = reshape(repeat(collect(1:max_len),B), (max_len,B))'                 # -> (B,max_len): Create indexing matrix for modifier
+  
+    #TODO: Fix here
+    # Index the log likelihood of gold edges.
+    #_edge_node_log_likelihood = edgenode_log_likelihood[
+    #    batch_index, edge_heads.data, modifier_index]                                  # -> should be (T, B)
+    #_edge_label_log_likelihood = edge_label_log_likelihood[                            # -> should be (T, B)
+    #    batch_index, modifier_index, edge_labels.data]
+    _edgenode_log_likelihood  = zeros(max_len,B)
+    _edgelabel_log_likelihood = zeros(max_len,B)
+    
+    gold_edge_node_nll  = - sum(_edgenode_log_likelihood[2:end, :])                     # -> (T-1, B): Exclude the dummy root.
+    gold_edge_label_nll = - sum(_edgelabel_log_likelihood[2:end, :])                    # -> (T-1, B): Exclude the dummy root.
+    loss = gold_edge_node_nll + gold_edge_label_nll
+    return loss
+end
+
+
 
 ## Add a dummy ROOT at the beginning of each node sequence.
 #
@@ -167,26 +189,25 @@ function greedy_decode(g::DeepBiaffineGraphDecoder, edgelabel_h, edgelabel_m, ed
 
 
     # TODO: Set diagonal elements to -inf
-    # edgenode_scores = edgenode_scores + torch.diag(edge_node_scores.new(max_len).fill_(-np.inf))
+    # edgenode_scores = edgenode_scores + torch.diag(edgenode_scores.new(max_len).fill_(-np.inf))
     # minus_mask = (1 .- mask) * -Inf    # -> (Tencoder, B)
 
     # TODO: Set invalid positions to -inf
     # minus_mask = (1 - mask.float()) * -Inf
-    # edge_node_scores = edge_node_scores + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
+    # edgenode_scores = edgenode_scores + minus_mask.unsqueeze(2) + minus_mask.unsqueeze(1)
 
     in(x) = return x[2]
     # Compute naive predictions.
-    a = argmin(edgenode_scores, dims=2)
+    a = argmin(value(edgenode_scores), dims=2)
     b = reshape(a, size(a,1),size(a,3)) 
-    edge_heads = in.(b)                                                                 # -> (B, Tencoder): remove cartesian type
+    edge_heads = in.(b)                                                                # -> (B, Tencoder): remove cartesian type
     
     edgelabel_scores = get_edgelabel_scores(g, edgelabel_h, edgelabel_m, edge_heads)
-    a = argmin(edgelabel_scores, dims=2)
+    a = argmin(value(edgelabel_scores), dims=2)
     b = reshape(a, size(a,1),size(a,3)) 
     edgelabels = in.(b)                                                                # -> (B, Tencoder): remove cartesian type
     return edge_heads[:, 2:end], edgelabels[:, 2:end]
 end
-
 
 
 function get_edgelabel_scores(g::DeepBiaffineGraphDecoder, edgelabel_h, edgelabel_m, edge_heads)
