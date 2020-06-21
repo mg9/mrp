@@ -37,12 +37,16 @@ hiddens, src_attn_vector, srcalignments, tgt_attn_vector, tgtalignments = decode
 
 ## PointerGenerator
 vocabsize = 12202
-pointergenerator = PointerGenerator(H, vocabsize, 1e-20)
-source_attentions = srcalignments
-source_attention_maps = generator_inputs["copy_attention_maps"]
-target_attentions = tgtalignments
-target_attention_maps = generator_inputs["coref_attention_maps"]
-pointergenerator_loss = pointergenerator(hiddens, source_attentions, source_attention_maps, target_attentions, target_attention_maps)
+p = PointerGenerator(H, vocabsize, 1e-20)
+src_attentions = srcalignments
+tgt_attentions = tgtalignments
+generate_targets = generator_inputs["vocab_targets"]
+src_copy_targets = generator_inputs["copy_targets"]
+tgt_copy_targets = generator_inputs["coref_targets"]
+src_attention_maps = generator_inputs["copy_attention_maps"]
+tgt_attention_maps = generator_inputs["coref_attention_maps"]
+pointergenerator_loss = p(hiddens, src_attentions, src_attention_maps, tgt_attentions, tgt_attention_maps,
+                                                                    generate_targets, src_copy_targets, tgt_copy_targets)
 
 ## DeepBiaffineGraphDecoder
 edgenode_hidden_size = 256
