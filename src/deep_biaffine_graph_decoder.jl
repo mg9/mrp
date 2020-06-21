@@ -77,9 +77,8 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, edge_heads, edgelabels, corefs, 
     num_nodes  = size(mask, 1)
     hiddens, edge_heads, edgelabels, corefs, mask = add_head_sentinel(hiddens, edge_heads, edgelabels, corefs, mask) # -> size(hiddens,3)+=1, Tencoder=Tdecoder=Ty+1  
     (edgenode_h, edgenode_m), (edgelabel_h, edgelabel_m) = encode(g, hiddens)
-    edgenode_scores = get_edgenode_scores(g, edgenode_h, edgenode_m, mask)   # -> (B, Tencoder, Tdecoder, num_labels)
-
-    pred_edge_heads, pred_edge_labels  = greedy_decode(edgelabel_h, edgelabel_m, edgenode_scores, corefs, mask)
+    edgenode_scores = get_edgenode_scores(g, edgenode_h, edgenode_m, mask)   # -> (B, Tencoder, Tdecoder*num_labels)
+    pred_edge_heads, pred_edge_labels  = greedy_decode(g, edgelabel_h, edgelabel_m, edgenode_scores, mask)
     #TODO: calculate and return loss
 end
 
@@ -154,11 +153,14 @@ function get_edgenode_scores(g, edgenode_h, edgenode_m, mask)
 end
 
 
-function greedy_decode(edgelabel_h, edgelabel_m, edgenode_scores, mask)
+function greedy_decode(g, edgelabel_h, edgelabel_m, edgenode_scores, mask)
     #  edgelabel_h:      (edgelabel_hiddensize, B, Tencoder)
     #  edgelabel_m:      (edgelabel_hiddensize, B, Tencoder)
     #  edgenode_scores:  (B, Tencoder, Tdecoder)
     #  mask:             (Tencoder, B)
+    #  -> edge_heads:  (B, Tencoder-1)?
+    #  -> edgelabels: (B, numlabels-1)?
+
 
     # TODO: Set diagonal elements to -inf
     # edgenode_scores = edgenode_scores + torch.diag(edge_node_scores.new(max_len).fill_(-np.inf))
@@ -174,22 +176,16 @@ function greedy_decode(edgelabel_h, edgelabel_m, edgenode_scores, mask)
     b = reshape(a, size(a,1),size(a,3)) 
     edge_heads = in.(b)                                                                 # -> (B, Tencoder): remove cartesian type
     
-    edgelabel_scores = get_edge_label_scores(edgelabel_h, edgelabel_m, edge_heads)
+    edgelabel_scores = get_edgelabel_scores(g, edgelabel_h, edgelabel_m, edge_heads)
     a = argmin(edgelabel_scores, dims=2)
     b = reshape(a, size(a,1),size(a,3)) 
-    edge_labels = in.(b)                                                                # -> (B, Tencoder): remove cartesian type
-
-    #= TODO: Edge label scores
-    # Based on predicted heads, compute the edge label scores.
-    # [batch, length, num_labels]
-    _, edge_labels = edge_label_scores.max(dim=2)
-    =#
-    return edge_heads[:, 1:], edge_labels[:, 1:]
+    edgelabels = in.(b)                                                                # -> (B, Tencoder): remove cartesian type
+    return edge_heads[:, 2:end], edgelabels[:, 2:end]
 end
 
 
 
-function get_edge_label_scores(g, edgelabel_h, edgelabel_m, edge_heads)
+function get_edgelabel_scores(g, edgelabel_h, edgelabel_m, edge_heads)
     #  edgelabel_h:      (edgelabel_hiddensize, B, Tencoder)
     #  edgelabel_m:      (edgelabel_hiddensize, B, Tencoder)
     #  edge_heads:       (B, Tencoder)
@@ -204,7 +200,6 @@ function get_edge_label_scores(g, edgelabel_h, edgelabel_m, edge_heads)
     #edge_label_h = edge_label_h[batch_index, edge_heads.data].contiguous()
     #edge_label_m = edge_label_m.contiguous()
 
-    # [batch, length, num_labels]
-    edgelabel_scores = g.edgelabel_bilinear(edgelabel_h, edgelabel_m)
-    return edge_label_scores
+    edgelabel_scores = g.edgelabel_bilinear(edgelabel_h, edgelabel_m) # -> (B, Tencoder, out_features)
+    return edgelabel_scores
 end
