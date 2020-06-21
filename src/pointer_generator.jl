@@ -74,8 +74,6 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
 
     Hy, B, Ty = size(hiddens) 
     loss = sum(hiddens)
-    return loss 
-
     hiddens = reshape(hiddens, (:,B *Ty)) # -> (H, B*Ty) 
 
     src_dynamic_vocabsize = size(src_attention_maps, 1)
@@ -128,7 +126,7 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     scaled_copy_target_probs = bmm(scaled_tgt_attentions, convert(_atype,tgt_attention_maps))        # -> (Ty, tgtdynamic_vocabsize, B)
 
     probs = cat(scaled_vocab_probs, scaled_copy_source_probs, scaled_copy_target_probs, dims=2)      # -> (Ty,vocabsize+dynamic_vocabsize,B)
-    predictions = argmax(probs, dims=2)                                                              # -> (Ty,1,B)
+    predictions = argmax(value(probs), dims=2)                                                              # -> (Ty,1,B)
 
     # TODO: check this part from original code again
     #   Set the probability of coref NA to 0.
@@ -139,11 +137,11 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     predictions = reshape(predictions, (:, size(predictions,2)*size(predictions,3)))                 # -> (Ty, B)
     coverage_records = nothing                                                                       # TODO: fix here and use coverage records
     
-    #loss = calcloss(pg, probs, predictions, src_attentions, generate_targets, src_copy_targets, 
-    #        tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records)     
-    return 0
-end
+    loss = calcloss(pg, probs, predictions, src_attentions, generate_targets, src_copy_targets, 
+            tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records) 
 
+    return loss    
+end
 
     
 
