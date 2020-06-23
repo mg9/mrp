@@ -20,7 +20,7 @@ end
 # ## Model constructor
 #
 # The `DeepBiaffineGraphDecoder` constructor takes the following arguments:
-# * `hidden`: size of the hidden vectors of the decoder
+# * `inputsize`: size of the hidden vectors of the decoder
 # * `edgenode_hiddensize`: number of edgenode_hiddensize;  transform representations into a space for edge node heads and edge node modifiers
 # * `edgelabel_hiddensize`: number of edgelabel_hiddensize; transform representations into a space for edge label heads and edge label modifiers
 # * `num_labels`: number of head tags
@@ -61,9 +61,9 @@ function (bg::DeepBiaffineGraphDecoder)(hiddens, edge_heads, edgelabels, corefs,
 
     input_size = size(hiddens, 1)
     num_nodes  = size(mask, 1)
-    hiddens, edge_heads, edgelabels, corefs, mask = add_head_sentinel(hiddens, edge_heads, edgelabels, corefs, mask) # -> size(hiddens,3)+=1, Tencoder=Tdecoder=Ty+1  
+    hiddens, edge_heads, edgelabels, corefs, mask = add_head_sentinel(hiddens, edge_heads, edgelabels, corefs, mask) # -> size(hiddens,3)+=1, Tencoder=Tdecoder=Ty  
     (edgenode_h, edgenode_m), (edgelabel_h, edgelabel_m) = encode(bg, hiddens)
-    edgenode_scores = get_edgenode_scores(bg, edgenode_h, edgenode_m, mask)                                          # -> (B, Tencoder, Tdecoder*num_labels)
+    edgenode_scores = get_edgenode_scores(bg, edgenode_h, edgenode_m, mask)                                          # -> (B, Tencoder, Tdecoder*num_labels), num_labels=1 so we'll ignore it during rest of the code
     pred_edge_heads, pred_edge_labels  = greedy_decode(bg, edgelabel_h, edgelabel_m, edgenode_scores, mask)
     
     loss = calcloss(bg, edgelabel_h, edgelabel_m, edgenode_scores, edge_heads, edgelabels, mask)  
@@ -112,8 +112,8 @@ end
 #
 function add_head_sentinel(hiddens, edge_heads, edgelabels, corefs, mask)
     # hiddens:      (Hy, B, Ty) memory_bank?
-    # edge_heads:   (1(ty-1?), B)
-    # edgelabels:   (1(ty-1?), B)
+    # edge_heads:   (1(Ty-1?), B)
+    # edgelabels:   (1(Ty-1?), B)
     # corefs:       (Ty, B)
     # mask:         (Ty, B)
     # -> hiddens:     (Hy, B, Ty+1)
@@ -174,7 +174,7 @@ function get_edgenode_scores(g::DeepBiaffineGraphDecoder, edgenode_h, edgenode_m
     # mask:       (Ty, B)
     # -> edgenode_scores:(B, Tencoder, Tdecoder)
     edgenode_scores = g.biaffine_attention(edgenode_h, edgenode_m, mask_d=mask, mask_e=mask)             # -> (B, Tencoder, Tdecoder, num_labels)
-    edgenode_scores = reshape(edgenode_scores, (size(edgenode_scores,1), size(edgenode_scores,2), :))    # -> (B, Tencoder, Tdecoder)
+    edgenode_scores = reshape(edgenode_scores, (size(edgenode_scores,1), size(edgenode_scores,2), :))    # -> (B, Tencoder, Tdecoder*num_labels)
     return edgenode_scores
 end
 
