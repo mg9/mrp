@@ -1,5 +1,8 @@
 using HDF5
 
+START_SYMBOL = '@start@'
+END_SYMBOL = '@end@'
+
 mutable struct batchdata
     encoder_tokens
     encoder_characters
@@ -51,21 +54,30 @@ function prepare_batch_input(batch)
     encoder_pos_tags = batch["src_pos_tags"]
     encoder_must_copy_tags = batch["src_must_copy_tags"]
     encoder_char_inputs = batch["encoder_characters"]
-    encoder_mask = zeros(size(batch["encoder_tokens"])) ## TODO change here, not correct!!!
+    mask(x) = if x != 0; x=1; else; x=0; end
+    encoder_mask = mask.(batch["encoder_tokens"]) 
 
     encoder_inputs["bert_token"] = bert_token_inputs
     encoder_inputs["token_subword_index"] = encoder_token_subword_index
     encoder_inputs["token"] = encoder_token_inputs
     encoder_inputs["pos_tag"] = encoder_pos_tags
-    encoder_inputs["must_copy_tag"] = encoder_must_copy_tags
+    encoder_inputs["must_copy_tag"] = encoder_must_copy_tags            # TODO: How they define must copy tags?
     encoder_inputs["char"] = encoder_char_inputs
     encoder_inputs["mask"] = encoder_mask
 
     ## Decoder inputs
-    decoder_token_inputs = batch["decoder_tokens"][1:end-1,:]
-    decoder_pos_tags = batch["tgt_pos_tags"][1:end-1, : ]
-    decoder_char_inputs = batch["decoder_characters"][:,1:end-1,:]
-    decoder_coref_inputs = Integer.(zeros(size(batch["tgt_copy_indices"][1:end-1,:]))) ## TODO change here, not correct!!!
+    decoder_token_inputs = batch["decoder_tokens"][1:end-1,:]           # -> (num_tokens,B) exclude EOS?
+    decoder_pos_tags = batch["tgt_pos_tags"][1:end-1, : ]               # -> (num_tokens,B) exclude EOS?
+    decoder_char_inputs = batch["decoder_characters"][:,1:end-1,:]      # -> (num_chars, num_tokens,B) exclude EOS?
+    raw_coref_inputs = batch["tgt_copy_indices"][1:end-1,:]             # -> (num_tokens,B) exclude EOS?
+    coref_happen_mask = (raw_coref_inputs .!= 0)
+    T, B = size(raw_coref_inputs)
+    arange= reshape(repeat(collect(1:T),B), (T,B))
+    decoder_coref_inputs =  arange
+    b =decoder_coref_inputs.*coref_happen_mask
+    decoder_coref_inputs = decoder_coref_inputs .- b
+    decoder_coref_inputs += raw_coref_inputs                            # -> (num_tokens,B) exclude EOS?, TODO: is this line necessary?   
+
 
     decoder_inputs["token"] = decoder_token_inputs
     decoder_inputs["pos_tag"] = decoder_pos_tags
@@ -74,17 +86,12 @@ function prepare_batch_input(batch)
 
 
     ## Generator inputs, TODO: check here again!
-    # [batch, num_tokens]
-    vocab_targets = batch["decoder_tokens"][2:end,:]
-    # [batch, num_tokens]
-    coref_targets = batch["tgt_copy_indices"][2:end,:]
-    # [batch, num_tokens, num_tokens + coref_na]
-    coref_attention_maps = batch["tgt_copy_map"][:,2:end,:]  # exclude BOS
-    # [batch, num_tgt_tokens, num_src_tokens + unk]
-    copy_targets = batch["src_copy_indices"][2:end,:]
-    # [batch, num_src_tokens + unk, src_dynamic_vocab_size]
-    # Exclude the last pad.
-    copy_attention_maps = batch["src_copy_map"][:,2:end-1,:]
+    vocab_targets = batch["decoder_tokens"][2:end,:]                    # -> (num_tokens,B) exclude BOS
+    coref_targets = batch["tgt_copy_indices"][2:end,:]                  # -> (num_tokens,B) exclude BOS
+    coref_attention_maps = batch["tgt_copy_map"][:,2:end,:]             # -> (num_tokens+coref_na,num_tokens,B) exclude BOS
+    
+    copy_targets = batch["src_copy_indices"][2:end,:]                   # -> (num_tokens,B) exclude BOS
+    copy_attention_maps = batch["src_copy_map"][:,2:end-1,:]            # -> (src_dynamic_vocab_size, num_src_tokens + unk, B) exclude the last pad
 
     generator_inputs["vocab_targets"] = vocab_targets
     generator_inputs["coref_targets"] = coref_targets
@@ -94,10 +101,12 @@ function prepare_batch_input(batch)
 
 
     ## Parser inputs
-    # Remove the last two pads so that they have the same size of other inputs?
-    edge_heads =  batch["head_indices"][1:end-2,:]
+                                                                        # Original comment: Remove the last two pads so that they have the same size of other inputs?
+    edge_heads =  batch["head_indices"][1:end-2,:]                      # TODO: only one node, one head?
     edge_labels = batch["head_tags"][1:end-2,:]
-    parser_mask = zeros(size(decoder_token_inputs)) ## TODO change here, not correct!!!
+    parser_token_inputs = copy(decoder_token_inputs) 
+    id_END_SYMBOL = 3                                                   # TODO: take this dynamically
+    parser_mask = (parser_token_inputs .== id_END_SYMBOL)               # -> (num_tokens,B) exclude EOS? 
 
     parser_inputs["edge_heads"] = edge_heads
     parser_inputs["edge_labels"] = edge_labels
