@@ -29,19 +29,9 @@ end
 
 #-
 @testset "Testing PointerGenerator" begin
-    batches = read_batches_from_h5("../data/data.h5")
-    tbatch = batches[1]
-    vocab_pad_idx = 1 # 0th index
-    vocabsize = 12202
-    enc_inputs, dec_inputs, generator_inputs , parser_inputs = prepare_batch_input(tbatch)
-    encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
-    key, val = encode(m, encoder_input, encoder_mask)
-    decoder_input = prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
-    cell = randn!(similar(key, size(key,1), size(key,3), 2))
-    hiddens, _, srcalignments, _, tgtalignments = decode(m, decoder_input, (key,val), cell)
-    Hy = size(hiddens,1)
-    pg = PointerGenerator(Hy, vocabsize, 1e-20)
-    @test size(pg.projection.w) == (vocabsize, Hy)
+    H = 512
+    pg = PointerGenerator(H, vocabsize, 1e-20)
+    @test size(pg.projection.w) == (vocabsize, H)
 end
 
 
@@ -61,47 +51,56 @@ end
 #   `tgt_copy_targets`:  target node index in the dynamic vocabulary,
 #   `coverage_records`:  Nothing or a tensor recording source-side coverages.
 ## TODO: Invalid indexes part
-function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt_attentions, 
+function (pg::PointerGenerator)(attn_vector, src_attentions, src_attention_maps, tgt_attentions, 
                                 tgt_attention_maps, generate_targets, src_copy_targets, tgt_copy_targets; invalid_indexes=Nothing, vocab_pad_idx = 1)
-    # hiddens: (Hy, B, Ty)
-    # src_attentions: (Tx,Ty,B) 
+   
+    # attn_vector:    (Hy, B, 1)
+    # src_attentions: (Tx,1,B) 
     # src_attentions_maps: (src_dynamic_vocabsize, Tx, B)
-    # tgt_attentions: (Ty,Ty,B) 
+    # tgt_attentions: (Ty,1,B) 
     # tgt_attention_maps: (tgt_dynamic_vocabsize, Ty, B)
-    # -> probs: (Ty, vocabsize + src_dynamic_vocabsize + tgt_dynamic_vocabsize, B)
-    # -> predictions: (Ty, 1, B)
+    # -> probs: (1, vocabsize + src_dynamic_vocabsize + tgt_dynamic_vocabsize, B)
+    # -> predictions: (1, 1, B)
     # -> src_dynamic_vocabsize, tgt_dynamic_vocabsize
 
-    Hy, B, Ty = size(hiddens) 
-    loss = sum(hiddens)
-    hiddens = reshape(hiddens, (:,B *Ty)) # -> (H, B*Ty) 
+
+    ## TODO fix here
+    #dummy = convert(_atype, zeros(size(tgt_attention_maps,2),size(tgt_attentions,2),size(tgt_attentions,3)))
+    #tgt_attentions = tgt_attentions .+ dummy
+
+    vocab_pad_idx = 1; 
+    unknown_idx = 2
+    coverage_records=nothing; eps = 1e-20; force_copy=true; vocabsize = 12202; # TODO: take theese dynamically
+
+
+    Hy, B, Ty = size(attn_vector) 
+    attn_vector = reshape(attn_vector, (:,B *Ty)) # -> (H, B*Ty) 
 
     src_dynamic_vocabsize = size(src_attention_maps, 1)
     tgt_dynamic_vocabsize = size(tgt_attention_maps, 1)
 
 
     # Pointer probability.
-    p = softmax(pg.linear_pointer(hiddens), dims=1)  # -> (3, B*Ty)
-    p_copy_source = reshape(p[1, :], (B*Ty, 1))      # -> (B*Ty,1)
-    p_copy_source = reshape(p_copy_source, (Ty,1,B)) # -> (Ty,1,B)
+    p = softmax(pg.linear_pointer(attn_vector), dims=1) # -> (3, B*Ty)
+    p_copy_source = reshape(p[1, :], (B*Ty, 1))         # -> (B*Ty,1)
+    p_copy_source = reshape(p_copy_source, (Ty,1,B))    # -> (Ty,1,B)
 
-    p_copy_target = reshape(p[2, :], (B*Ty, 1))      # -> (B*Ty,1)
-    p_copy_target = reshape(p_copy_target, (Ty,1,B)) # -> (Ty,1,B)
+    p_copy_target = reshape(p[2, :], (B*Ty, 1))         # -> (B*Ty,1)
+    p_copy_target = reshape(p_copy_target, (Ty,1,B))    # -> (Ty,1,B)
 
-    p_generate = reshape(p[3, :], (B*Ty, 1))         # -> (B*Ty,1)
-    p_generate = reshape(p_generate, (Ty,1,B))       # -> (Ty,1,B)
+    p_generate = reshape(p[3, :], (B*Ty, 1))            # -> (B*Ty,1)
+    p_generate = reshape(p_generate, (Ty,1,B))          # -> (Ty,1,B)
 
-    #return 1
+
     # Pgen: Probability distribution over the vocabulary.
-    scores = pg.projection(hiddens)                                  # -> (vocabsize, B*Ty)
+    scores = pg.projection(attn_vector)                              # -> (vocabsize, B*1)
     scores = permutedims(scores, [2,1])                              # -> (B*Ty, vocabsize)
     #scores[:, vocab_pad_idx] .+= -Inf32                             # TODO: fix here for diff
     vocab_probs = softmax(scores, dims=2)                            # TODO: is it okay?
-    vocab_probs = reshape(vocab_probs, (Ty, vocabsize, B))           # -> (Ty, vocabsize, B)
+    vocab_probs = reshape(vocab_probs, (Ty, vocabsize, B))           # -> (1, vocabsize, B)
     dummy = convert(_atype, zeros(1,size(vocab_probs,2),1))
-    p_generate = p_generate .+ dummy                                 # -> (Ty, vocabsize, B)
-    scaled_vocab_probs = vocab_probs .* p_generate                   # -> (Ty, vocabsize, B)
-
+    p_generate = p_generate .+ dummy                                 # -> (1, vocabsize, B)
+    scaled_vocab_probs = vocab_probs .* p_generate                   # -> (1, vocabsize, B)
 
     
     # Probability distribution over the dynamic vocabulary.
@@ -109,24 +108,24 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     # should be zero.
 
     # Psrc
-    src_attentions = permutedims(src_attentions, [2,1,3])                                           # -> (Ty,Tx,B)
+    src_attentions = permutedims(src_attentions, [2,1,3])                                           # -> (1,Tx,B)
     dummy = convert(_atype, zeros(1,size(src_attentions,2),1))
-    p_copy_source = p_copy_source .+ dummy                                                          # -> (Ty,Tx,B)
-    scaled_src_attentions = src_attentions .* p_copy_source                                         # -> (Ty,Tx,B)
+    p_copy_source = p_copy_source .+ dummy                                                          # -> (1,Tx,B)
+    scaled_src_attentions = src_attentions .* p_copy_source                                         # -> (1,Tx,B)
     src_attention_maps = permutedims(src_attention_maps, [2,1,3])                                   # -> (Tx, srcdynamic_vocabsize, B)
-    scaled_copy_source_probs = bmm(scaled_src_attentions, convert(_atype,src_attention_maps))       # -> (Ty, srcdynamic_vocabsize, B)
+    scaled_copy_source_probs = bmm(scaled_src_attentions, convert(_atype,src_attention_maps))       # -> (1, srcdynamic_vocabsize, B)
 
     
     # Ptgt
-    tgt_attentions = permutedims(tgt_attentions, [2,1,3])                                            # -> (Ty,Ty,B) - a dummy line
+    tgt_attentions = permutedims(tgt_attentions, [2,1,3])                                            # -> (1,Ty,B) - a dummy line
     dummy = convert(_atype, zeros(1,size(tgt_attentions,2),1))
-    p_copy_target = p_copy_target .+ dummy                                                           # -> (Ty,Ty,B)
-    scaled_tgt_attentions = tgt_attentions .* p_copy_target                                          # -> (Ty,Ty,B)
+    p_copy_target = p_copy_target .+ dummy                                                           # -> (1,Ty,B)
+    scaled_tgt_attentions = tgt_attentions .* p_copy_target                                          # -> (1,Ty,B)
     tgt_attention_maps = permutedims(tgt_attention_maps, [2,1,3])                                    # -> (Ty, tgtdynamic_vocabsize, B)
-    scaled_copy_target_probs = bmm(scaled_tgt_attentions, convert(_atype,tgt_attention_maps))        # -> (Ty, tgtdynamic_vocabsize, B)
+    scaled_copy_target_probs = bmm(scaled_tgt_attentions, convert(_atype,tgt_attention_maps))        # -> (1, tgtdynamic_vocabsize, B)
 
     probs = cat(scaled_vocab_probs, scaled_copy_source_probs, scaled_copy_target_probs, dims=2)      # -> (Ty,vocabsize+dynamic_vocabsize,B)
-    predictions = argmax(value(probs), dims=2)                                                              # -> (Ty,1,B)
+    predictions = argmax(value(probs), dims=2)                                                       # -> (1,1,B)
 
     # TODO: check this part from original code again
     #   Set the probability of coref NA to 0.
@@ -134,13 +133,12 @@ function (pg::PointerGenerator)(hiddens, src_attentions, src_attention_maps, tgt
     #  _probs[vocab_size + source_dynamic_vocab_size, :, :] = 0
     #_, predictions = _probs.max(2)
 
-    predictions = reshape(predictions, (:, size(predictions,2)*size(predictions,3)))                 # -> (Ty, B)
+    predictions = reshape(predictions, (:, size(predictions,2)*size(predictions,3)))                 # -> (1, B)
     coverage_records = nothing                                                                       # TODO: fix here and use coverage records
     
-    loss = calcloss(pg, probs, predictions, src_attentions, generate_targets, src_copy_targets, 
-            tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records) 
-
-    return loss    
+    loss = calcloss(probs, predictions, src_attentions, generate_targets, src_copy_targets, 
+        tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records)
+    return loss
 end
 
     
@@ -153,8 +151,8 @@ end
 #  `tgt_copy_targets`:   target node index in the dynamic vocabulary,
 #  `coverage_records`:   Nothing or a tensor recording source-side coverages.
 #
-function calcloss(pg, probs, predictions, copy_attentions, generate_targets, src_copy_targets, tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records)
-    # probs: (Ty, vocabsize + src_dynamic_vocabsize + tgt_dynamic_vocabsize, B)
+function calcloss(probs, predictions, copy_attentions, generate_targets, src_copy_targets, tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records)
+    # probs: (1, vocabsize + src_dynamic_vocabsize + tgt_dynamic_vocabsize, B)
     # predictions: (Ty,B)
     # copy_attentions(src_attentions): (Tx,Ty,B) 
     # generate_targets:  (Ty,B)
@@ -163,14 +161,14 @@ function calcloss(pg, probs, predictions, copy_attentions, generate_targets, src
     # src_dynamic_vocabsize: 9, remove here
     # tgt_dynamic_vocabsize: 3, remove here
 
-    vocab_pad_idx = 1; coverage_records=nothing; eps = 1e-20; force_copy=true; vocabsize = 12202; # TODO: take theese dynamically
-    
-    non_pad_mask  = (generate_targets .!= 1)                                                # -> (Ty,B)
-    src_copy_mask = (src_copy_targets .!= 1) .* (src_copy_targets .!= 0)                    # -> (Ty,B): 1 is the index for unknown words 
+    vocab_pad_idx = 2; unknown_idx = 1; coverage_records=nothing; eps = 1e-20; force_copy=true; vocabsize = 12202; # TODO: take theese dynamically
+
+    non_pad_mask  = (generate_targets .!= vocab_pad_idx)                                                # -> (Ty,B)
+    src_copy_mask = (src_copy_targets .!= unknown_idx) .* (src_copy_targets .!= vocab_pad_idx)          # -> (Ty,B): 1 is the index for unknown words 
     non_src_copy_mask = 1 .- src_copy_mask
 
-    tgt_copy_mask = (tgt_copy_targets .!= 0)                                
-    non_tgt_copy_mask = 1 .- tgt_copy_mask                                                  # -> (Ty,B): 0 is the index for coref NA
+    tgt_copy_mask = (tgt_copy_targets .!= 1)                                                # -> (Ty,B): 0 (1 for us) is the index for coref NA
+    non_tgt_copy_mask = 1 .- tgt_copy_mask                                                 
     offset = vocabsize + src_dynamic_vocabsize
     tgt_copy_targets_with_offset = tgt_copy_targets .+ offset                               # -> (Ty,B)
     tgt_copy_target_probs = probs[tgt_copy_targets_with_offset]                             # -> (Ty,B): TODO: is that true? 

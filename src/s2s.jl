@@ -18,9 +18,9 @@ struct S2S
     encoder::RNN             # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
     srcmemory::Memory        # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
     decoder::RNN             # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
-    tgtmemory::Memory        # enccell(Dy*Hy,B,Ty) -> keys(H,Ty,B), vals(Dy*H,Ty,B)
+    #tgtmemory::Memory        # enccell(Dy*Hy,B,Ty) -> keys(H,Ty,B), vals(Dy*H,Ty,B)
     srcattention::Attention  # deccell(H,B,Ty), keys(H,Tx,B), vals(Dx*H,Tx,B) -> attnvec(H,B,Ty)
-    tgtattention::Attention  # deccell(H,B,Ty), keys(H,Ty,B), vals(Dy*H,Ty,B) -> attnvec(H,B,Ty)
+    #tgtattention::Attention  # deccell(H,B,Ty), keys(H,Ty,B), vals(Dy*H,Ty,B) -> attnvec(H,B,Ty)
     dropout::Real            # dropout probability
 end
 
@@ -56,15 +56,16 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
    
     wquery = 1
     srcscale = param(1)
-    tgtscale = param(1)
+    #tgtscale = param(1)
 
     srcwattn = bidirectional ? param(hidden,3hidden) : param(hidden,2hidden)
-    tgtwattn = param(hidden, 2hidden)
+    #tgtwattn = param(hidden, 2hidden)
 
     srcattn = Attention(wquery, srcwattn,srcscale)
-    tgtattn = Attention(wquery, tgtwattn, tgtscale)
+    #tgtattn = Attention(wquery, tgtwattn, tgtscale)
 
-    S2S(encoder, srcmemory, decoder, tgtmemory, srcattn, tgtattn, dropout) 
+    #S2S(encoder, srcmemory, decoder, tgtmemory, srcattn, tgtattn, dropout) 
+    S2S(encoder, srcmemory, decoder, srcattn, dropout) 
 end
 
 #- Test kit
@@ -102,10 +103,10 @@ Ey = TOKEN_EMB_DIM + POS_EMB_DIM + COREF_EMB_DIM + CNN_EMB_DIM
     @test size(m.srcattention.wattn) == (Dx == 2 ? (H,3H) : (H,2H))
     @test size(m.srcattention.scale) == (1,)
 
-    @test size(m.tgtmemory.w) == (Dy == 2 ? (H,2H) : (H, H))
+    #@test size(m.tgtmemory.w) == (Dy == 2 ? (H,2H) : (H, H))
     @test m.srcattention.wquery == 1
-    @test size(m.tgtattention.wattn) == (Dy == 2 ? (H,3H) : (H,2H))
-    @test size(m.tgtattention.scale) == (1,)
+    #@test size(m.tgtattention.wattn) == (Dy == 2 ? (H,3H) : (H,2H))
+    #@test size(m.tgtattention.scale) == (1,)
 end
 
 
@@ -221,9 +222,9 @@ end
 # The encoder output is passed to the `s.memory` layer which returns a `(keys,values)` pair. `encode()` returns
 # this pair to be used later by the attention mechanism.
 
-function encode(s::S2S, encoder_input, encoder_mask) 
+function encode(s::S2S, z, encoder_mask) 
     ##  (Ex,B,Tx), (B,Tx) -> ((Hx,Tx,B), (Hx*D,Tx,B))
-    z = encoder_input               #; @size z (Ex, B, Tx)      
+                                    #; @size z (Ex, B, Tx)      
     s.encoder.h, s.encoder.c = 0, 0 #; #@sizes(s); (B,Tx) = size(src)
     z = s.encoder(z)                #; @size z (Hx*Dx,B,Tx)
     s.decoder.h = s.encoder.h       #; @size s.encoder.h (Hy,B,Ly)
@@ -255,7 +256,9 @@ end
 # step. The attention scores are scaled using `a.scale` and normalized along the time
 # dimension using `softmax`. After the appropriate reshape and/or permutation, the scores
 # are multiplied with the `vals` tensor (using `bmm` again) to compute the context
-# tensor. After the appropriate reshape and/or permutation the context vector is
+# tensor.
+
+# After the appropriate reshape and/or permutation the context vector is
 # concatenated with the cell and linearly transformed to the attention vector using
 # `a.wattn`. Please see the paper and code examples for details.
 #
@@ -365,24 +368,24 @@ end
 end
 
 
-function decode(s::S2S, decoder_input, srcmem, prev)
-    # decoder_input: (Ey,B,Ty) 
-    # srcmem:        ((Hy,Tx,B),(Hx*Dx,Tx,B))
-    # prev:          (Hy,B,Ty) 
-    # -> z(hiddens):      (Hy,B,Ty)
-    # -> src_attn_vector: (Hy,B,Ty)
+function decode(s::S2S, input, srcmem, prev)
+    # input:    (Ey,B,1) 
+    # srcmem:   ((Hy,Tx,B),(Hx*Dx,Tx,B))
+    # prev:     (Hy,B,1) 
+    # -> z(hiddens):      (Hy,B,1)
     # -> srcalignments:   (Tx,Ty,B)
-    # -> tgt_attn_vector: (Hy,B,Ty)
     # -> tgtalignments:   (Ty,Ty,B)
-
-    z = vcat(decoder_input, prev)                  
-    z = s.decoder(z)                   
-    src_attention, srcalignments = s.srcattention(z, srcmem)            
-    tgtmem = s.tgtmemory(z)
-    tgt_attention, tgtalignments = s.tgtattention(z, tgtmem)            
-    return z, src_attention, srcalignments, tgt_attention, tgtalignments
+    
+    z = input
+    z = s.decoder(vcat(convert(_atype,z), prev))                    # -> (H,B,1)               
+    src_attn_vector, srcalignments = s.srcattention(z, srcmem)      # -> (H,B,1), (Tx,1,B) 
+    #tgtmem = s.tgtmemory(src_attn_vector)
+    #tgt_attn_vector, tgtalignments = s.tgtattention(z, tgtmem)        
+    return z, src_attn_vector, srcalignments #, tgtalignments
 end
 
+
+#=
 #-
 @testset "Testing decoder" begin
     enc_inputs, dec_inputs, generator_inputs , parser_inputs = prepare_batch_input(tbatch)
@@ -397,3 +400,4 @@ end
     @test size(src_attn_vector) == (Hy,B, 2)
     @test size(tgt_attn_vector) == (Hy,B, 2)
 end
+=#
