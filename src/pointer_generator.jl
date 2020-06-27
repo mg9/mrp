@@ -1,5 +1,6 @@
-include("s2s.jl")
 include("linear.jl")
+include("s2s.jl")
+include("deep_biaffine_graph_decoder.jl")
 
 _usegpu = gpu()>=0
 _atype = ifelse(_usegpu, KnetArray{Float32}, Array{Float64})
@@ -51,9 +52,7 @@ end
 #   `tgt_copy_targets`:  target node index in the dynamic vocabulary,
 #   `coverage_records`:  Nothing or a tensor recording source-side coverages.
 ## TODO: Invalid indexes part
-function (pg::PointerGenerator)(attn_vector, src_attentions, src_attention_maps, tgt_attentions, 
-                                tgt_attention_maps, generate_targets, src_copy_targets, tgt_copy_targets; invalid_indexes=Nothing, vocab_pad_idx = 1)
-   
+function (pg::PointerGenerator)(s::S2S, g::DeepBiaffineGraphDecoder, src, src_mask, tgt, src_attention_maps, tgt_attention_maps, generate_targets, src_copy_targets, tgt_copy_targets, edge_heads, edgelabels, corefs, parser_mask; invalid_indexes=Nothing, vocab_pad_idx = 1)
     # attn_vector:    (Hy, B, 1)
     # src_attentions: (Tx,1,B) 
     # src_attentions_maps: (src_dynamic_vocabsize, Tx, B)
@@ -63,10 +62,29 @@ function (pg::PointerGenerator)(attn_vector, src_attentions, src_attention_maps,
     # -> predictions: (1, 1, B)
     # -> src_dynamic_vocabsize, tgt_dynamic_vocabsize
 
-
-    ## TODO fix here
+    # TODO: why is graph decoder here? move it.
+    # TODO: fix here
     #dummy = convert(_atype, zeros(size(tgt_attention_maps,2),size(tgt_attentions,2),size(tgt_attentions,3)))
     #tgt_attentions = tgt_attentions .+ dummy
+
+    (Ex, B, Tx), Ty =size(src), size(tgt,3)
+    tgt_attentions = convert(_atype,zeros(Ty,1,B))
+    mem = encode(s, src, src_mask) # -> ((H, Tx, B), (H*Dx, Tx, B))
+    cell = fill!(similar(mem[1], size(mem[1],1), size(mem[1],3), 1), 0)
+    hiddens = []
+    attn_vectors = []
+    srcalignments = []
+    for t in 1:size(tgt,3)
+        input = (@view tgt[:,:,t:t])   # -> (Ey,B,1)
+        cell, src_attn_vector, src_alignments = decode(s, input, mem, cell) 
+        push!(hiddens, cell)
+        push!(attn_vectors, src_attn_vector)
+        push!(srcalignments, src_alignments)
+    end
+    hiddens = cat(hiddens...,dims=3)
+    attn_vector = cat(attn_vectors...,dims=3)
+    src_attentions = cat(srcalignments...,dims=2)
+
 
     vocab_pad_idx = 1; 
     unknown_idx = 2
@@ -136,8 +154,12 @@ function (pg::PointerGenerator)(attn_vector, src_attentions, src_attention_maps,
     predictions = reshape(predictions, (:, size(predictions,2)*size(predictions,3)))                 # -> (1, B)
     coverage_records = nothing                                                                       # TODO: fix here and use coverage records
     
-    loss = calcloss(probs, predictions, src_attentions, generate_targets, src_copy_targets, 
+    loss = 0.0
+    loss += calcloss(probs, predictions, src_attentions, generate_targets, src_copy_targets, 
         tgt_copy_targets, src_dynamic_vocabsize, tgt_dynamic_vocabsize, coverage_records)
+
+    ## DeepBiaffineGraphDecoder loss
+    loss += g(hiddens, edge_heads, edgelabels, corefs, parser_mask)
     return loss
 end
 

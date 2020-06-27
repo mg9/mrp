@@ -14,7 +14,7 @@ struct Memory; w; end
 
 struct Attention; wquery; wattn; scale; end
 
-struct S2S
+mutable struct S2S
     encoder::RNN             # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
     srcmemory::Memory        # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
     decoder::RNN             # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
@@ -68,46 +68,6 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
     S2S(encoder, srcmemory, decoder, srcattn, dropout) 
 end
 
-#- Test kit
-H, Ex, Ey, L, Dx, Dy, Pdrop = 512, 1318, 550, 2, 2, 1, 0.33
-m = S2S(H,Ex,Ey; layers=L,bidirectional=(Dx==2),dropout=Pdrop)
-batches = read_batches_from_h5("../data/data.h5")
-tbatch = batches[1]
-BERT_EMB_DIM = 768
-TOKEN_EMB_DIM = 300 #glove
-POS_EMB_DIM = 100
-CNN_EMB_DIM = 100
-MUSTCOPY_EMB_DIM = 50
-COREF_EMB_DIM = 50
-POSTAG_VOCAB_SIZE = 51
-ENCODER_TOKEN_VOCAB_SIZE = 18002
-ENCODER_CHAR_VOCAB_SIZE = 125
-MUSTCOPY_VOCAB_SIZE = 3
-DECODER_TOKEN_VOCAB_SIZE = 12202
-DECODER_CHAR_VOCAB_SIZE = 87
-DECODER_COREF_VOCAB_SIZE = 500
-Ex = BERT_EMB_DIM + TOKEN_EMB_DIM + POS_EMB_DIM + MUSTCOPY_EMB_DIM + CNN_EMB_DIM
-Ey = TOKEN_EMB_DIM + POS_EMB_DIM + COREF_EMB_DIM + CNN_EMB_DIM
-
-@testset "Testing S2S constructor" begin
-    @test m.encoder.inputSize == Ex
-    @test m.decoder.inputSize == Ey + H
-    @test m.encoder.hiddenSize == m.decoder.hiddenSize == H
-    @test m.encoder.direction == Dx-1
-    @test m.encoder.numLayers == (Dx == 2 ? L÷2 : L)
-    @test m.decoder.numLayers == L
-    @test m.encoder.dropout == m.decoder.dropout == Pdrop
-
-    @test size(m.srcmemory.w) == (Dx == 2 ? (H,2H) : ())
-    @test m.srcattention.wquery == 1
-    @test size(m.srcattention.wattn) == (Dx == 2 ? (H,3H) : (H,2H))
-    @test size(m.srcattention.scale) == (1,)
-
-    #@test size(m.tgtmemory.w) == (Dy == 2 ? (H,2H) : (H, H))
-    @test m.srcattention.wquery == 1
-    #@test size(m.tgtattention.wattn) == (Dy == 2 ? (H,3H) : (H,2H))
-    #@test size(m.tgtattention.scale) == (1,)
-end
 
 
 # ## Part 2. Memory
@@ -136,14 +96,6 @@ end
 # You can use the following helper function for scaling and linear transformations of 3-D tensors:
 mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, size(x)[2:end]...)))
 
-#-
-@testset "Testing memory" begin
-    H,D,B,Tx =  m.encoder.hiddenSize, m.encoder.direction+1, 64, 7
-    x = KnetArray(randn(Float32,H*D,B,Tx))
-    k,v = m.srcmemory(x)
-    @test v == permutedims(x,(1,3,2))
-    @test k == mmul(m.srcmemory.w, v)
-end
 
 
 # ## Part 3. Encoder
@@ -205,16 +157,6 @@ function prepare_encode_input(inputs)
     return encoder_inputs, encoder_mask
 end
 
-#-
-@testset "Testing prepare_encode_input" begin
-    Ex= 1318; Ey=550
-    enc_inputs, _, _, _ = prepare_batch_input(tbatch)
-    Tx, B = size(enc_inputs["token"])
-    encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
-    @test size(encoder_input) == (Ex, B, Tx)
-    @test size(encoder_mask) == (B, Tx)
-end
-
 
 # `encode()` takes a model `s` and encoder_inputs and encoder_mask?`. It passes the input
 # through `s.srcembed` and `s.encoder` layers with the `s.encoder` RNN hidden states
@@ -233,17 +175,6 @@ function encode(s::S2S, z, encoder_mask)
     return z
 end
 
-#-
-@testset "Testing encoder" begin
-    enc_inputs, _, _, _ = prepare_batch_input(tbatch)
-    Tx, B = size(enc_inputs["token"])
-    encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
-    key, val = encode(m, encoder_input, encoder_mask)
-    Hx, Dx = m.encoder.hiddenSize, m.encoder.direction+1
-    @test size(key) == (Hx,Tx,B)
-    @test size(val) == (Hx*Dx,Tx,B)
-    @test (m.decoder.h,m.decoder.c) === (m.encoder.h,m.encoder.c)
-end
 
 
 # ## Part 4. Attention
@@ -287,18 +218,7 @@ function (a::Attention)(cell, mem)
     ## https://github.com/tensorflow/nmt/issues/57
 end
 
-#-
-@testset "Testing src attention" begin
-    enc_inputs, _, _, _ = prepare_batch_input(tbatch)
-    H, (_, B) = m.encoder.hiddenSize, size(enc_inputs["token"])
-    encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
-    key, val = encode(m, encoder_input, encoder_mask)
-    Knet.seed!(1)
-    x = KnetArray(randn(Float32,H,B,5))
-    y, yalignments = m.srcattention(x, (key, val))
-    @test size(y) == size(x)
-    #@test norm(y) ≈ 808.381f0
-end
+
 
 
 # ## Part 5. Decoder
@@ -359,14 +279,6 @@ function prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
     return decoder_inputs
 end
 
-#-
-@testset "Testing prepare_decode_input" begin
-    enc_inputs, dec_inputs, _, parser_inputs = prepare_batch_input(tbatch)
-    Ty, B = size(dec_inputs["token"])
-    decoder_input = prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
-    @test size(decoder_input) == (Ey, B, Ty)
-end
-
 
 function decode(s::S2S, input, srcmem, prev)
     # input:    (Ey,B,1) 
@@ -383,21 +295,3 @@ function decode(s::S2S, input, srcmem, prev)
     #tgt_attn_vector, tgtalignments = s.tgtattention(z, tgtmem)        
     return z, src_attn_vector, srcalignments #, tgtalignments
 end
-
-
-#=
-#-
-@testset "Testing decoder" begin
-    enc_inputs, dec_inputs, generator_inputs , parser_inputs = prepare_batch_input(tbatch)
-    Hy, (_, B), Ty = m.decoder.hiddenSize, size(dec_inputs["token"]), 2
-    encoder_input, encoder_mask = prepare_encode_input(enc_inputs)
-    key, val = encode(m, encoder_input, encoder_mask)
-    Knet.seed!(1)
-    decoder_input = prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
-    cell = randn!(similar(key, size(key,1), size(key,3), 2))
-    hiddens, src_attn_vector, srcalignments, tgt_attn_vector, tgtalignments = decode(m, decoder_input, (key,val), cell)
-    @test size(hiddens) == (Hy,B, 2)
-    @test size(src_attn_vector) == (Hy,B, 2)
-    @test size(tgt_attn_vector) == (Hy,B, 2)
-end
-=#

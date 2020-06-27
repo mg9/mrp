@@ -65,14 +65,14 @@ function (ba::BiaffineAttention)(input_e, input_d; mask_e=nothing, mask_d=nothin
     output = output .+ ba.b
 
     if mask_d !== nothing && mask_e !== nothing
-        mask_d = reshape(mask_d, (1, size(mask_d,1),size(mask_d,2),1))                  # -> (1,Tdecoder,B,1)
-        output = permutedims(output, [2,3,1,4])                                         # -> (Tencoder,Tdecoder,B,num_labels)
-        output = output .* convert(_atype,mask_d)                                       # -> (Tencoder,Tdecoder,B,num_labels)
+        mask_d = reshape(mask_d, (1, size(mask_d,1),size(mask_d,2),1))          # -> (1,Tdecoder,B,1)
+        output = permutedims(output, [2,3,1,4])                                 # -> (Tencoder,Tdecoder,B,num_labels)
+        output = output .* convert(_atype,mask_d)                               # -> (Tencoder,Tdecoder,B,num_labels)
        
-        output = permutedims(output, [2,1,3,4])                                         # -> (Tdecoder,Tencoder,B,num_labels)
-        mask_e = reshape(mask_e, (1, size(mask_e,1),size(mask_e,2),1))                  # -> (1,Tencoder,B,1)
-        output = output .* convert(_atype,mask_e)                                       # -> (Tdecoder,Tencoder,B,num_labels)
-        output = permutedims(output, [2,1,3,4])                                         # -> (Tencoder,Tdecoder,B,num_labels)
+        output = permutedims(output, [2,1,3,4])                                 # -> (Tdecoder,Tencoder,B,num_labels)
+        mask_e = reshape(mask_e, (1, size(mask_e,1),size(mask_e,2),1))          # -> (1,Tencoder,B,1)
+        output = output .* convert(_atype,mask_e)                               # -> (Tdecoder,Tencoder,B,num_labels)
+        output = permutedims(output, [3,2,1,4])                                 # -> (B,Tencoder,Tdecoder,num_labels)
     end
     return output
 end
