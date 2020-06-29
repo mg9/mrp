@@ -28,13 +28,14 @@ function PointerGenerator(hidden::Int, vocabsize::Int, eps::Float64;  force_copy
     PointerGenerator(projection, linear_pointer) 
 end
 
+#=
 #-
 @testset "Testing PointerGenerator" begin
     H = 512
     pg = PointerGenerator(H, vocabsize, 1e-20)
     @test size(pg.projection.w) == (vocabsize, H)
 end
-
+=#
 
 ##  Compute a distribution over the target dictionary
 #   extended by the dynamic dictionary implied by copying target nodes.
@@ -52,7 +53,7 @@ end
 #   `tgt_copy_targets`:  target node index in the dynamic vocabulary,
 #   `coverage_records`:  Nothing or a tensor recording source-side coverages.
 ## TODO: Invalid indexes part
-function (pg::PointerGenerator)(s::S2S, g::DeepBiaffineGraphDecoder, src, src_mask, tgt, src_attention_maps, tgt_attention_maps, generate_targets, src_copy_targets, tgt_copy_targets, edge_heads, edgelabels, corefs, parser_mask; invalid_indexes=Nothing, vocab_pad_idx = 1)
+function (pg::PointerGenerator)(s::S2S, g::DeepBiaffineGraphDecoder, enc_inputs, dec_inputs, src_attention_maps, tgt_attention_maps, generate_targets, src_copy_targets, tgt_copy_targets, edge_heads, edgelabels, corefs, parser_mask; invalid_indexes=Nothing, vocab_pad_idx = 1,  unknown_idx = 2)
     # attn_vector:    (Hy, B, 1)
     # src_attentions: (Tx,1,B) 
     # src_attentions_maps: (src_dynamic_vocabsize, Tx, B)
@@ -63,20 +64,20 @@ function (pg::PointerGenerator)(s::S2S, g::DeepBiaffineGraphDecoder, src, src_ma
     # -> src_dynamic_vocabsize, tgt_dynamic_vocabsize
 
     # TODO: why is graph decoder here? move it.
-    # TODO: fix here
-    #dummy = convert(_atype, zeros(size(tgt_attention_maps,2),size(tgt_attentions,2),size(tgt_attentions,3)))
-    #tgt_attentions = tgt_attentions .+ dummy
-
-    (Ex, B, Tx), Ty =size(src), size(tgt,3)
+    (_, Tx, B), Ty =size(src_attention_maps), size(dec_inputs["token"],1)
     tgt_attentions = convert(_atype,zeros(Ty,1,B))
-    mem = encode(s, src, src_mask) # -> ((H, Tx, B), (H*Dx, Tx, B))
+    mem = encode(s, enc_inputs) # -> ((H, Tx, B), (H*Dx, Tx, B))
     cell = fill!(similar(mem[1], size(mem[1],1), size(mem[1],3), 1), 0)
     hiddens = []
     attn_vectors = []
     srcalignments = []
-    for t in 1:size(tgt,3)
-        input = (@view tgt[:,:,t:t])   # -> (Ey,B,1)
-        cell, src_attn_vector, src_alignments = decode(s, input, mem, cell) 
+    dec2_inputs = Dict()
+
+    for t in 1:Ty
+        dec2_inputs["token"]   = dec_inputs["token"][t:t,:] #-> (Ey,B,1)
+        dec2_inputs["coref"]   = dec_inputs["coref"][t:t,:]
+        dec2_inputs["pos_tag"] = dec_inputs["pos_tag"][t:t,:]
+        cell, src_attn_vector, src_alignments = decode(s, dec2_inputs, mem, cell) 
         push!(hiddens, cell)
         push!(attn_vectors, src_attn_vector)
         push!(srcalignments, src_alignments)
@@ -86,14 +87,10 @@ function (pg::PointerGenerator)(s::S2S, g::DeepBiaffineGraphDecoder, src, src_ma
     src_attentions = cat(srcalignments...,dims=2)
 
 
-    vocab_pad_idx = 1; 
-    unknown_idx = 2
-    coverage_records=nothing; eps = 1e-20; force_copy=true; vocabsize = 12202; # TODO: take theese dynamically
-
+    coverage_records=nothing; eps = 1e-20; force_copy=true; vocabsize = 12202; # TODO: take theese dynamically
 
     Hy, B, Ty = size(attn_vector) 
     attn_vector = reshape(attn_vector, (:,B *Ty)) # -> (H, B*Ty) 
-
     src_dynamic_vocabsize = size(src_attention_maps, 1)
     tgt_dynamic_vocabsize = size(tgt_attention_maps, 1)
 
@@ -143,9 +140,9 @@ function (pg::PointerGenerator)(s::S2S, g::DeepBiaffineGraphDecoder, src, src_ma
     scaled_copy_target_probs = bmm(scaled_tgt_attentions, convert(_atype,tgt_attention_maps))        # -> (1, tgtdynamic_vocabsize, B)
 
     probs = cat(scaled_vocab_probs, scaled_copy_source_probs, scaled_copy_target_probs, dims=2)      # -> (Ty,vocabsize+dynamic_vocabsize,B)
-    predictions = argmax(value(probs), dims=2)                                                       # -> (1,1,B)
+    predictions = argmax(value(probs), dims=2)                                                       # -> (1,1,B)
 
-    # TODO: check this part from original code again
+    # TODO: check this part from original code again
     #   Set the probability of coref NA to 0.
     #  _probs = copy(probs)
     #  _probs[vocab_size + source_dynamic_vocab_size, :, :] = 0

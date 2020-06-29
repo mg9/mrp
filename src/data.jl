@@ -3,6 +3,7 @@ using HDF5
 START_SYMBOL = "@start@"
 END_SYMBOL = "@end@"
 #self.token_to_idx = {self.pad_token : 0, self.unk_token : 1} +=1 change them for 1-indexed
+id_END_SYMBOL = 4  # TODO: take this dynamically
 
 
 mutable struct Dataset
@@ -58,7 +59,7 @@ end
 
 function prepare_batch_input(batch)
     encoder_inputs = Dict(); decoder_inputs = Dict(); generator_inputs = Dict(); parser_inputs = Dict()
-    #batch["head_indices"] .+= 1 # head_indices are 0-indexed but julia 1-indexed so we increase them.
+    batch["head_indices"] .+= 1 # head_indices are 0-indexed but julia 1-indexed so we increase them.
     #batch["head_tags"] .+= 1 # head_indices are 0-indexed but julia 1-indexed so we increase them.
 
     batch["encoder_tokens"] .+= 1
@@ -73,7 +74,10 @@ function prepare_batch_input(batch)
     batch["tgt_copy_indices"] .+= 1
 
 
-    ## Encoder inputs
+    #batch["src_pos_tags"] .+= 1
+    #batch["tgt_pos_tags"] .+= 1
+
+    ## Encoder inputs
     bert_token_inputs = batch["src_token_ids"]
     encoder_token_subword_index = batch["src_token_subword_index"]
     encoder_token_inputs = batch["encoder_tokens"]
@@ -110,7 +114,7 @@ function prepare_batch_input(batch)
     decoder_inputs["coref"] = decoder_coref_inputs
 
 
-    ## Generator inputs, TODO: check here again!
+    ## Generator inputs, TODO: check here again!
     vocab_targets = batch["decoder_tokens"][2:end,:]                    # -> (num_tokens,B) exclude BOS
     coref_targets = batch["tgt_copy_indices"][2:end,:]                  # -> (num_tokens,B) exclude BOS
     #TODO: coref_attention_maps = batch["tgt_copy_map"][2:end,:,:]             # -> (num_tokens,num_tokens+coref_na, B) exclude BOS
@@ -138,7 +142,6 @@ function prepare_batch_input(batch)
     edge_heads =  batch["head_indices"][1:end-2,:]                      # TODO: only one node, one head?
     edge_labels = batch["head_tags"][1:end-2,:]
     parser_token_inputs = copy(decoder_token_inputs) 
-    id_END_SYMBOL = 3                                                   # TODO: take this dynamically
     parser_mask = (parser_token_inputs .== id_END_SYMBOL)               # -> (num_tokens,B) exclude EOS? 
 
     parser_inputs["edge_heads"] = edge_heads
@@ -147,4 +150,3 @@ function prepare_batch_input(batch)
     parser_inputs["mask"] = parser_mask
     return encoder_inputs, decoder_inputs, generator_inputs, parser_inputs
 end
-

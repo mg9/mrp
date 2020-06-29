@@ -30,7 +30,7 @@ function BaseModel(H, Ex, Ey, L, vocabsize, edgenode_hidden_size, edgelabel_hidd
 end
 
 
-function (bm::BaseModel)(src, src_mask, tgt, src_attention_maps, tgt_attention_maps, generate_targets, src_copy_targets, tgt_copy_targets, edge_heads, edgelabels, corefs, parser_mask)
+function (bm::BaseModel)(enc_inputs,  dec_inputs, src_attention_maps, tgt_attention_maps, generate_targets, src_copy_targets, tgt_copy_targets, edge_heads, edgelabels, corefs, parser_mask)
     # src:                (Ex, B, Tx) 
     # src_mask:           (B, Tx)
     # tgt:                (Ey, B, Ty)
@@ -45,7 +45,6 @@ function (bm::BaseModel)(src, src_mask, tgt, src_attention_maps, tgt_attention_m
     # -> tgtalignments:    (1, 1, B)
 
     # S2S + PointerGenerator + BiaffineGraphDecoder, TODO: they should be seperate
-    loss = bm.p(bm.s, bm.g, src, src_mask, tgt, src_attention_maps, tgt_attention_maps,generate_targets, src_copy_targets, tgt_copy_targets, edge_heads, edgelabels, corefs, parser_mask)
-    println("loss: $loss")
+    loss = bm.p(bm.s, bm.g, enc_inputs,  dec_inputs, src_attention_maps, tgt_attention_maps,generate_targets, src_copy_targets, tgt_copy_targets, edge_heads, edgelabels, corefs, parser_mask)
     return loss
 end

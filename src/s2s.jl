@@ -15,13 +15,17 @@ struct Memory; w; end
 struct Attention; wquery; wattn; scale; end
 
 mutable struct S2S
-    encoder::RNN             # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
-    srcmemory::Memory        # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
-    decoder::RNN             # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
-    #tgtmemory::Memory        # enccell(Dy*Hy,B,Ty) -> keys(H,Ty,B), vals(Dy*H,Ty,B)
-    srcattention::Attention  # deccell(H,B,Ty), keys(H,Tx,B), vals(Dx*H,Tx,B) -> attnvec(H,B,Ty)
-    #tgtattention::Attention  # deccell(H,B,Ty), keys(H,Ty,B), vals(Dy*H,Ty,B) -> attnvec(H,B,Ty)
-    dropout::Real            # dropout probability
+    srctokenembed::Embed        # encinput(B,Tx) -> srcembed(Ex,B,Tx)
+    encoder::RNN                # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
+    tgttokenembed::Embed        # encinput(B,Tx) -> srcembed(Ex,B,Tx)
+    postagembed::Embed
+    tgtcorefembed::Embed
+    srcmemory::Memory           # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
+    decoder::RNN                # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
+    #tgtmemory::Memory          # enccell(Dy*Hy,B,Ty) -> keys(H,Ty,B), vals(Dy*H,Ty,B)
+    srcattention::Attention     # deccell(H,B,Ty), keys(H,Tx,B), vals(Dx*H,Tx,B) -> attnvec(H,B,Ty)
+    #tgtattention::Attention    # deccell(H,B,Ty), keys(H,Ty,B), vals(Dy*H,Ty,B) -> attnvec(H,B,Ty)
+    dropout::Real               # dropout probability
 end
 
 
@@ -45,6 +49,14 @@ end
 
 function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=false, dropout=0)
     @assert !bidirectional || iseven(layers) "layers should be even for bidirectional models"
+    
+
+    srctokenembed = Embed(ENCODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
+    tgttokenembed = Embed(DECODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
+    postagembed   = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
+    tgtcorefembed = Embed(DECODER_COREF_VOCAB_SIZE, COREF_EMB_DIM)
+ 
+
     encoderlayers = (bidirectional ? layers ÷ 2 : layers)
     encoder = RNN(srcembsz, hidden; dropout=dropout, numLayers=encoderlayers, bidirectional=bidirectional)
    
@@ -65,7 +77,7 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
     #tgtattn = Attention(wquery, tgtwattn, tgtscale)
 
     #S2S(encoder, srcmemory, decoder, tgtmemory, srcattn, tgtattn, dropout) 
-    S2S(encoder, srcmemory, decoder, srcattn, dropout) 
+    S2S(srctokenembed, encoder, tgttokenembed, postagembed, tgtcorefembed, srcmemory, decoder, srcattn, dropout) 
 end
 
 
@@ -102,54 +114,26 @@ mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, s
 #
 # First prepare encode inputs
 # Concats embed of various features
-function prepare_encode_input(inputs)
+function prepare_encode_input(s::S2S, inputs)
     ## inputs dict ->  (Ex, B, Tx), (B,Tx) 
     bert_tokens, token_subword_index, tokens, pos_tags, must_copy_tags, chars, mask = inputs["bert_token"], inputs["token_subword_index"], inputs["token"], inputs["pos_tag"], inputs["must_copy_tag"], inputs["char"], inputs["mask"]
     encoder_inputs = []
     CNN_EMB_DIM = 100; DROPOUT = 0.33
     Tx, B = size(tokens)
 
-    # (pytorch loads are 0-indexed, however knet 1-indexed)
+    # (pytorch loads are 0-indexed, however jl 1-indexed)
     must_copy_tags = must_copy_tags .+1
     tokens = tokens .+1
     pos_tags = pos_tags .+1
 
-    # Bert embeddings
-    if true #use_bert
-        bert_embeddings = KnetArray{Float32}(zeros(BERT_EMB_DIM, Tx , B))
-        push!(encoder_inputs, bert_embeddings)
-    end
-
     # Token embeddings
-    embed = Embed(ENCODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
-    token_embeddings = embed(tokens)
+    token_embeddings = s.srctokenembed(tokens)
     push!(encoder_inputs, token_embeddings)
 
     # Postag embeddings
-    embed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
-    pos_tag_embeddings = embed(pos_tags)
+    pos_tag_embeddings = s.postagembed(pos_tags)
     push!(encoder_inputs, pos_tag_embeddings)
 
-    # Mustcopy embeddings
-    if true #use_must_copy_embedding
-        embed = Embed(MUSTCOPY_VOCAB_SIZE, MUSTCOPY_EMB_DIM)
-        must_copy_tag_embeddings = embed(must_copy_tags)
-        push!(encoder_inputs, must_copy_tag_embeddings)
-    end
-
-    # CharCNN embeddings
-    if true #use_char_cnn
-        embed = Embed(ENCODER_CHAR_VOCAB_SIZE, CNN_EMB_DIM)
-        # chars: num_chars, Tx, B
-        char_embeddings = embed(chars) # -> CNN_EMB_DIM , num_chars , Tx, B 
-        CNN_EMB_DIM, num_chars, T, B = size(char_embeddings) # -> CNN_EMB_DIM , num_chars , Tx , B
-        char_embeddings = reshape(char_embeddings, :,num_chars, B*T) # -> CNN_EMB_DIM, num_chars , (B x T)
-        #Send it to charCNN which we ignore for now
-        #char_cnn_output = self.encoder_char_cnn(char_embeddings, None)
-        #char_cnn_output = char_cnn_output.view(batch_size, Tx, -1)
-        char_cnn_output = KnetArray{Float32}(zeros(CNN_EMB_DIM , Tx, B))
-        push!(encoder_inputs, char_cnn_output)
-    end
     encoder_inputs = vcat(encoder_inputs...)
     encoder_inputs = dropout(encoder_inputs, DROPOUT)
     encoder_inputs = permutedims(encoder_inputs, [1, 3, 2])
@@ -164,10 +148,10 @@ end
 # The encoder output is passed to the `s.memory` layer which returns a `(keys,values)` pair. `encode()` returns
 # this pair to be used later by the attention mechanism.
 
-function encode(s::S2S, z, encoder_mask) 
+function encode(s::S2S, enc_inputs) 
     ##  (Ex,B,Tx), (B,Tx) -> ((Hx,Tx,B), (Hx*D,Tx,B))
-                                    #; @size z (Ex, B, Tx)      
     s.encoder.h, s.encoder.c = 0, 0 #; #@sizes(s); (B,Tx) = size(src)
+    z, encoder_mask = prepare_encode_input(s, enc_inputs)
     z = s.encoder(z)                #; @size z (Hx*Dx,B,Tx)
     s.decoder.h = s.encoder.h       #; @size s.encoder.h (Hy,B,Ly)
     s.decoder.c = s.encoder.c       #; @size s.encoder.c (Hy,B,Ly)
@@ -220,7 +204,6 @@ end
 
 
 
-
 # ## Part 5. Decoder
 #
 # `decode()` takes a model `s`, a linearized-AMR `decoder_input`, the memory from the
@@ -230,49 +213,32 @@ end
 # `s.attention` layer takes the decoder output and the encoder memory to compute the
 # "attention vector" which is returned by `decode()`.
 
-#
 # First prepare decode inputs
 # Concats embed of various features
-function prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
-    ## enc_inputs, dec_inputs, parser_inputs dicts ->  (Ey, B, Ty)
-    tokens, pos_tags, chars, corefs, mask, tgt_mask = dec_inputs["token"], dec_inputs["pos_tag"], dec_inputs["char"], dec_inputs["coref"], enc_inputs["mask"], parser_inputs["mask"]
+function prepare_decode_input(s::S2S, dec_inputs)
+    # dec_inputs: Dict
+    # -> decoder_inputs: (Ey, B, Ty)
+    
+    tokens, pos_tags, corefs  = dec_inputs["token"], dec_inputs["pos_tag"], dec_inputs["coref"]
     decoder_inputs = []
-    CNN_EMB_DIM = 100; DROPOUT = 0.33
-    Ty, B = size(tokens)
-
-    # (pytorch loads are 0-indexed, however knet 1-indexed)
+    DROPOUT = 0.33
+    # (pytorch loads are 0-indexed, however jl 1-indexed)
     corefs = corefs .+1
+    tokens = tokens .+1
+    pos_tags = pos_tags .+1
 
-    # [batch, num_tokens, embedding_size]   
     # Token embeddings
-    embed = Embed(DECODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
-    token_embeddings = embed(tokens)
+    token_embeddings = s.tgttokenembed(tokens)
     push!(decoder_inputs, token_embeddings)
 
     # Postag embeddings
-    embed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
-    pos_tag_embeddings = embed(pos_tags)
+    pos_tag_embeddings = s.postagembed(pos_tags)
     push!(decoder_inputs, pos_tag_embeddings)
 
     # Coref embeddings
-    embed = Embed(DECODER_COREF_VOCAB_SIZE, COREF_EMB_DIM)
-    coref_embeddings = embed(corefs)
+    coref_embeddings = s.tgtcorefembed(corefs)
     push!(decoder_inputs, coref_embeddings)
-
-    # CharCNN embeddings
-    if true #use_char_cnn
-        embed = Embed(DECODER_CHAR_VOCAB_SIZE, CNN_EMB_DIM)
-        # chars: num_chars, Tx, B
-        char_embeddings = embed(chars) # -> CNN_EMB_DIM , num_chars , Ty, B 
-        CNN_EMB_DIM, num_chars, Ty, B = size(char_embeddings) # -> CNN_EMB_DIM , num_chars , Ty , B
-        char_embeddings = reshape(char_embeddings, :,num_chars, B*Ty) # -> CNN_EMB_DIM, num_chars , (B, T)
-        # Send it to charCNN which we ignore for now
-        #char_cnn_output = self.encoder_char_cnn(char_embeddings, None)
-        #char_cnn_output = char_cnn_output.view(batch_size, Ty, -1)
-        char_cnn_output = KnetArray{Float32}(zeros(CNN_EMB_DIM , Ty, B))
-        push!(decoder_inputs, char_cnn_output)
-    end
-
+ 
     decoder_inputs = vcat(decoder_inputs...)
     decoder_inputs = dropout(decoder_inputs, DROPOUT)
     decoder_inputs = permutedims(decoder_inputs, [1, 3, 2])
@@ -280,16 +246,16 @@ function prepare_decode_input(enc_inputs, dec_inputs, parser_inputs)
 end
 
 
-function decode(s::S2S, input, srcmem, prev)
-    # input:    (Ey,B,1) 
-    # srcmem:   ((Hy,Tx,B),(Hx*Dx,Tx,B))
+
+function decode(s::S2S, dec_inputs, srcmem, prev)
+    # srcmem:   ((Hy,Tx,B),(Hx*Dx,Tx,B))
     # prev:     (Hy,B,1) 
-    # -> z(hiddens):      (Hy,B,1)
+    # -> z(hiddens):      (Hy,B,Ty)
     # -> srcalignments:   (Tx,Ty,B)
     # -> tgtalignments:   (Ty,Ty,B)
-    
-    z = input
-    z = s.decoder(vcat(convert(_atype,z), prev))                    # -> (H,B,1)               
+
+    z = prepare_decode_input(s, dec_inputs)
+    z= s.decoder(vcat(z, prev))                                     # -> (H,B,1)               
     src_attn_vector, srcalignments = s.srcattention(z, srcmem)      # -> (H,B,1), (Tx,1,B) 
     #tgtmem = s.tgtmemory(src_attn_vector)
     #tgt_attn_vector, tgtalignments = s.tgtattention(z, tgtmem)        
