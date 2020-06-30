@@ -19,35 +19,96 @@ function BiLinear(left_features::Int, right_features::Int, out_features::Int)
     BiLinear(u, wl, wr, b)
 end
 
-
 function (bl::BiLinear)(input_left, input_right)
-    # input_left:  (edgelabel_hiddensize, B, T):  edgelabel_h
-    # input_right: (edgelabel_hiddensize, B, T):  edgelabel_m
-    # -> output: (B, T, out_features)
+    # input_left: (HL, B, T): edgelabel_h (HL: edgelabel_hiddensize)
+    # input_right: (HR, B, T): edgelabel_m (HR: edgelabel_hiddensize) 
+    # -> Output: (B, T, O) (O: out_features)
+    # HL and HR should be the same for our usage, but this function generalizes to situations with
+    # different sizes
+    
+    HL, B, T = size(input_left)
+    HR = size(input_right, 1)
+    O = size(bl.u,2)
+    @assert size(input_right)[2:end]==size(input_left)[2:end]
+    @assert HL==size(bl.u,1)
+    @assert HR==size(bl.u,3)
+    
+    input_left = reshape(input_left, (HL, :))                                   # -> HL, (BxT)
+    
+    # Calculate x'U, or the left half of x'Uy
+    # inputs: input_left -> HL, (BxT) -> Transpose    -> (BxT), HL
+    #         bl.u       -> HL, O, HR -> will reshape -> HL, (OxHR)     
+    left = input_left' * reshape(bl.u, (HL, :))                                 # -> (BxT), (OxHR)
+    left = reshape(left, (B, T, O, HR))                                         # -> B, T, O, HR
+    left = permutedims(left, [3, 4, 1, 2])                                      # -> O, HR, B, T
+    
+    input_right = reshape(input_right, (HR, 1, B, T))                           # -> HR, 1, B, T
+    # Calculate x'U times y
+    out = bmm(left, input_right)                                                # -> O, 1, B, T
+    
+    out = reshape(out, (O, B, T))                                               # -> O, B, T
+    # add the bias                                                             
+    out = out .+ bl.b                                                           # -> O, B, T
+    
+    # reshape for the next operation
+    input_left = reshape(input_left, (HL, B*T))
+    input_right = reshape(input_right, (HR, (B*T)))
+    
+    linear_out = bl.wl*input_left + bl.wr*input_right                           # -> O, B*T
+    linear_out = reshape(linear_out, (O, B, T))
+    
+    # This is used in the paper (Extra addition to regular bilinear)
+    out = out .+ linear_out                                                     # -> O, B, T
+              
+    
+    # Double check the shape we want. For now, it will be B, T, O
+    out = permutedims(out, [2, 3, 1])                                           # -> B, T, O
+end
 
-    left_size  = size(input_left)
-    right_size = size(input_right)
-    out_size   = size(bl.u,2)
-    B = left_size[2]  # batch = int(np.prod(left_size[:-1]))
+function slowBilinear(bl::BiLinear, input_left, input_right)
+    # input_left: (HL, B, T): edgelabel_h (HL: edgelabel_hiddensize)
+    # input_right: (HR, B, T): edgelabel_m (HR: edgelabel_hiddensize) 
+    # -> Output: (B, T, O) (O: out_features)
+    # This is purely to test that the vectorized bilinear implementation works as intended
+    # Do not use this anywhere other than for testing
+    HL, B, T = size(input_left)
+    HR = size(input_right,1)
+    O = size(bl.u,2)
+    
+    out = zeros(B, T, O)
+    for i in 1:B
+        for j in 1:T
+            for k in 1:O
+                inpleft = input_left[:, i, j]      # -> HL
+                inpleft = reshape(inpleft, (1, :)) # -> 1, HL
+                inpright = input_right[:, i, j]    # -> HR
+                u = bl.u[:, k, :]                  # -> HL x HR
+                b = bl.b[k]                        # -> 1
+                # calc x'Uy + b
+                out[i, j, k] += (inpleft*u*inpright)[1]+b
+                # reshape back to HL
+                inpleft = reshape(inpleft, (:))
+                # add wl*inpleft and wr*inpright
+                wl = bl.wl[k, :]                   # -> HL
+                wr = bl.wr[k, :]                   # -> HR
+                out[i, j, k] += wl'*inpleft + wr'*inpright
+            end
+        end
+    end
+    out
+end
 
-    input_left = reshape(input_left, size(input_left,1), size(input_left,2)* size(input_left,3))       # -> (left_features, B*T)
-    input_left = input_left'                                                                           # -> (B*T, left_features)
-    out = mmul(input_left, bl.u)                                                                       # -> (B*T, out_features, right_features)  
 
-    input_right = reshape(input_right, size(input_right,1), size(input_right,3)*size(input_right,2))   # -> (right_features, B*T)
-    input_right = input_right'                                                                         # -> (B*T, right_features)
-    out = permutedims(out, [3,2,1])                                                                    # -> (right_features, out_features, B*T)  
-
-    out = mmul(input_right, out)                                                                       # -> (B*T, out_features, B*T)  
-    left_sum = sum(out,dims=1)                                                                         # -> (1, out_features,B*T)
-    out = permutedims(out, [3,2,1])
-    right_sum = sum(out,dims=1)                                                                        # -> (1, out_features,B*T)
-    total = left_sum + right_sum
-    total = reshape(total, (size(total,2),size(total,3)))                                              # -> (out_features,B*T)
-
-    input_left = input_left'                                            # -> (left_features, B*T)
-    input_right = input_right'                                          # -> (right_features,B*T)
-    output = total+(bl.wl * input_left) + (bl.wr * input_right) .+bl.b  # -> (out_features, B*T)
-    output = reshape(output, (B,:,out_size))                            # -> (B, T, out_features)
-    return output
+@testset "Testing Bilinear Layer" begin
+    HL, HR, O, B, T = 6, 6, 10, 26, 15
+    bl = BiLinear(randn(HL, O, HR), randn(O, HL), randn(O, HR), randn(O))
+    inp1 = randn(HL, B, T)
+    inp2 = randn(HR, B, T)
+    
+    @test bl(inp1, inp2) ≈ slowBilinear(bl, inp1, inp2)
+    
+    # Test using regular constructor (Using GPU if available)
+    inp1 = _atype(inp1); inp2 = _atype(inp2)
+    bl = BiLinear(HL, HR, O)
+    @test bl(inp1, inp2) ≈ slowBilinear(bl, inp1, inp2) 
 end
