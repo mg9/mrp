@@ -57,6 +57,7 @@ function read_batches_from_h5(file)
 end
 
 
+#=
 function prepare_batch_input(batch)
     encoder_inputs = Dict(); decoder_inputs = Dict(); generator_inputs = Dict(); parser_inputs = Dict()
     batch["head_indices"] .+= 1 # head_indices are 0-indexed but julia 1-indexed so we increase them.
@@ -74,8 +75,8 @@ function prepare_batch_input(batch)
     batch["tgt_copy_indices"] .+= 1
 
 
-    #batch["src_pos_tags"] .+= 1
-    #batch["tgt_pos_tags"] .+= 1
+    batch["src_pos_tags"] .+= 1
+    batch["tgt_pos_tags"] .+= 1
 
     ## Encoder inputs
     bert_token_inputs = batch["src_token_ids"]
@@ -150,3 +151,16 @@ function prepare_batch_input(batch)
     parser_inputs["mask"] = parser_mask
     return encoder_inputs, decoder_inputs, generator_inputs, parser_inputs
 end
+
+=#
+
+
+
+
+#a = permutedims(batch["src_copy_map"], [2,1,3])[2:end-1,:,:]  # -> (Tx,Tx+2,B) excludes BOS and final pad, numsrc, dynamicvocabsize(includes unk+pad), B 
+#b = permutedims(batch["tgt_copy_map"], [2,1,3])[2:end,:,:]    # -> (Ty-1,Ty,B) excludes BOS
+
+
+#(generate) vocab_targets = batch["decoder_tokens"][2:end,:]                    # -> (num_tokens,B) exclude BOS
+#srccopytargets = batch["src_copy_indices"][2:end,:]
+#tgtcopytargets = batch["tgt_copy_indices"][2:end,:]

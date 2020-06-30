@@ -1,7 +1,6 @@
 using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random, CuArrays, IterTools
 
 include("debug.jl")
-include("data.jl")
 include("embed.jl")
 
 # ## S2S: Sequence to sequence model with attention
@@ -14,18 +13,16 @@ struct Memory; w; end
 
 struct Attention; wquery; wattn; scale; end
 
-mutable struct S2S
+struct S2S
     srctokenembed::Embed        # encinput(B,Tx) -> srcembed(Ex,B,Tx)
-    encoder::RNN                # srcembed(Ex,B,Tx) -> enccell(Dx*H,B,Tx)
-    tgttokenembed::Embed        # encinput(B,Tx) -> srcembed(Ex,B,Tx)
-    postagembed::Embed
-    tgtcorefembed::Embed
-    srcmemory::Memory           # enccell(Dx*H,B,Tx) -> keys(H,Tx,B), vals(Dx*H,Tx,B)
-    decoder::RNN                # tgtembed(Ey,B,Ty) . attnvec(H,B,Ty)[t-1] = (Ey+H,B,Ty) -> deccell(H,B,Ty)
-    #tgtmemory::Memory          # enccell(Dy*Hy,B,Ty) -> keys(H,Ty,B), vals(Dy*H,Ty,B)
-    srcattention::Attention     # deccell(H,B,Ty), keys(H,Tx,B), vals(Dx*H,Tx,B) -> attnvec(H,B,Ty)
-    #tgtattention::Attention    # deccell(H,B,Ty), keys(H,Ty,B), vals(Dy*H,Ty,B) -> attnvec(H,B,Ty)
-    dropout::Real               # dropout probability
+    encoder::RNN                
+    srcmemory::Memory           
+    tgttokenembed::Embed       
+    decoder::RNN               
+    srcattention::Attention     
+    dropout::Real   
+    #srceos::Int       # source tokens eos #TODO: change here with vocab datatype
+    #tgteos::Int       # target tokens eos #TODO: change here with vocab datatype
 end
 
 
@@ -49,35 +46,18 @@ end
 
 function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=false, dropout=0)
     @assert !bidirectional || iseven(layers) "layers should be even for bidirectional models"
-    
-
     srctokenembed = Embed(ENCODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
     tgttokenembed = Embed(DECODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
-    postagembed   = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
-    tgtcorefembed = Embed(DECODER_COREF_VOCAB_SIZE, COREF_EMB_DIM)
- 
-
     encoderlayers = (bidirectional ? layers ÷ 2 : layers)
     encoder = RNN(srcembsz, hidden; dropout=dropout, numLayers=encoderlayers, bidirectional=bidirectional)
-   
     decoderinput = tgtembsz + hidden
     decoder = RNN(decoderinput, hidden; dropout=dropout, numLayers=layers)
-    
     srcmemory = bidirectional ? Memory(param(hidden,2hidden)) : Memory(1)
-    tgtmemory = Memory(param(hidden,hidden))
-   
     wquery = 1
     srcscale = param(1)
-    #tgtscale = param(1)
-
     srcwattn = bidirectional ? param(hidden,3hidden) : param(hidden,2hidden)
-    #tgtwattn = param(hidden, 2hidden)
-
     srcattn = Attention(wquery, srcwattn,srcscale)
-    #tgtattn = Attention(wquery, tgtwattn, tgtscale)
-
-    #S2S(encoder, srcmemory, decoder, tgtmemory, srcattn, tgtattn, dropout) 
-    S2S(srctokenembed, encoder, tgttokenembed, postagembed, tgtcorefembed, srcmemory, decoder, srcattn, dropout) 
+    S2S(srctokenembed, encoder, srcmemory, tgttokenembed, decoder, srcattn, dropout) 
 end
 
 
@@ -111,36 +91,6 @@ mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, s
 
 
 # ## Part 3. Encoder
-#
-# First prepare encode inputs
-# Concats embed of various features
-function prepare_encode_input(s::S2S, inputs)
-    ## inputs dict ->  (Ex, B, Tx), (B,Tx) 
-    bert_tokens, token_subword_index, tokens, pos_tags, must_copy_tags, chars, mask = inputs["bert_token"], inputs["token_subword_index"], inputs["token"], inputs["pos_tag"], inputs["must_copy_tag"], inputs["char"], inputs["mask"]
-    encoder_inputs = []
-    CNN_EMB_DIM = 100; DROPOUT = 0.33
-    Tx, B = size(tokens)
-
-    # (pytorch loads are 0-indexed, however jl 1-indexed)
-    must_copy_tags = must_copy_tags .+1
-    tokens = tokens .+1
-    pos_tags = pos_tags .+1
-
-    # Token embeddings
-    token_embeddings = s.srctokenembed(tokens)
-    push!(encoder_inputs, token_embeddings)
-
-    # Postag embeddings
-    pos_tag_embeddings = s.postagembed(pos_tags)
-    push!(encoder_inputs, pos_tag_embeddings)
-
-    encoder_inputs = vcat(encoder_inputs...)
-    encoder_inputs = dropout(encoder_inputs, DROPOUT)
-    encoder_inputs = permutedims(encoder_inputs, [1, 3, 2])
-    encoder_mask = permutedims(mask, [2, 1])
-    return encoder_inputs, encoder_mask
-end
-
 
 # `encode()` takes a model `s` and encoder_inputs and encoder_mask?`. It passes the input
 # through `s.srcembed` and `s.encoder` layers with the `s.encoder` RNN hidden states
@@ -148,14 +98,13 @@ end
 # The encoder output is passed to the `s.memory` layer which returns a `(keys,values)` pair. `encode()` returns
 # this pair to be used later by the attention mechanism.
 
-function encode(s::S2S, enc_inputs) 
-    ##  (Ex,B,Tx), (B,Tx) -> ((Hx,Tx,B), (Hx*D,Tx,B))
-    s.encoder.h, s.encoder.c = 0, 0 #; #@sizes(s); (B,Tx) = size(src)
-    z, encoder_mask = prepare_encode_input(s, enc_inputs)
-    z = s.encoder(z)                #; @size z (Hx*Dx,B,Tx)
-    s.decoder.h = s.encoder.h       #; @size s.encoder.h (Hy,B,Ly)
-    s.decoder.c = s.encoder.c       #; @size s.encoder.c (Hy,B,Ly)
-    z = s.srcmemory(z)              #; if z != (); @size z[1] (Hy,Tx,B); @size z[2] (Hx*Dx,Tx,B); end # z:(keys,values)
+function encode(s::S2S, tokens) 
+    s.encoder.h, s.encoder.c = 0, 0    #; @sizes(s); (B,Tx) = size(tokens)
+    z = s.srctokenembed(tokens)        #; @size z (Ex,B,Tx)
+    z = s.encoder(z)                   #; @size z (Hx*Dx,B,Tx)
+    s.decoder.h = s.encoder.h          #; @size s.encoder.h (Hy,B,s.decoder.numLayers)
+    s.decoder.c = s.encoder.c          #; @size s.encoder.c (Hy,B,s.decoder.numLayers)
+    z = s.srcmemory(z)                 #; if z != (); @size z[1] (Hy,Tx,B); @size z[2] (Hx*2,Tx,B); end # z:(keys,values)
     return z
 end
 
@@ -213,51 +162,12 @@ end
 # `s.attention` layer takes the decoder output and the encoder memory to compute the
 # "attention vector" which is returned by `decode()`.
 
-# First prepare decode inputs
-# Concats embed of various features
-function prepare_decode_input(s::S2S, dec_inputs)
-    # dec_inputs: Dict
-    # -> decoder_inputs: (Ey, B, Ty)
-    
-    tokens, pos_tags, corefs  = dec_inputs["token"], dec_inputs["pos_tag"], dec_inputs["coref"]
-    decoder_inputs = []
-    DROPOUT = 0.33
-    # (pytorch loads are 0-indexed, however jl 1-indexed)
-    corefs = corefs .+1
-    tokens = tokens .+1
-    pos_tags = pos_tags .+1
 
-    # Token embeddings
-    token_embeddings = s.tgttokenembed(tokens)
-    push!(decoder_inputs, token_embeddings)
-
-    # Postag embeddings
-    pos_tag_embeddings = s.postagembed(pos_tags)
-    push!(decoder_inputs, pos_tag_embeddings)
-
-    # Coref embeddings
-    coref_embeddings = s.tgtcorefembed(corefs)
-    push!(decoder_inputs, coref_embeddings)
- 
-    decoder_inputs = vcat(decoder_inputs...)
-    decoder_inputs = dropout(decoder_inputs, DROPOUT)
-    decoder_inputs = permutedims(decoder_inputs, [1, 3, 2])
-    return decoder_inputs
+function decode(s::S2S, tokens, srcmem, prev)
+    z = s.tgttokenembed(tokens)                                        #; (B,Ty) = size(tokens); @sizes(s); @size z (Ey,B,Ty)
+    z = vcat(z, prev)                                                  #; @size z (Ey+Hy,B,1)
+    z = s.decoder(z)                                                   #; @size z (Hy,B,1)
+    srcattnvector, srcalignments = s.srcattention(z, srcmem)           #; @size srcattnvector (Hy,B,1); @size srcalignments (Tx,1,B)
+    return z, srcattnvector, srcalignments 
 end
 
-
-
-function decode(s::S2S, dec_inputs, srcmem, prev)
-    # srcmem:   ((Hy,Tx,B),(Hx*Dx,Tx,B))
-    # prev:     (Hy,B,1) 
-    # -> z(hiddens):      (Hy,B,Ty)
-    # -> srcalignments:   (Tx,Ty,B)
-    # -> tgtalignments:   (Ty,Ty,B)
-
-    z = prepare_decode_input(s, dec_inputs)
-    z= s.decoder(vcat(z, prev))                                     # -> (H,B,1)               
-    src_attn_vector, srcalignments = s.srcattention(z, srcmem)      # -> (H,B,1), (Tx,1,B) 
-    #tgtmem = s.tgtmemory(src_attn_vector)
-    #tgt_attn_vector, tgtalignments = s.tgtattention(z, tgtmem)        
-    return z, src_attn_vector, srcalignments #, tgtalignments
-end
