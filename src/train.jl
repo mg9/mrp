@@ -24,7 +24,7 @@ H, L, Pdrop = 512, 2, 0.33
 vocabsize = 12202
 edgenode_hiddensize = 256
 edgelabel_hiddensize = 128
-num_labels = 141
+num_edgelabels = 141
 epochs = 10
 encodervocab_pad_idx =ENCODER_TOKEN_VOCAB_SIZE          ## DO not confuse about vocab_pad_idx, only srctokens and tgttokens pads have been changed for embedding layers
 decodervocab_pad_idx =DECODER_TOKEN_VOCAB_SIZE
@@ -43,18 +43,23 @@ function iterate(d::Dataset, state=collect(1:d.totalbatch))
     generatetargets = batch["decoder_tokens"][2:end,:]   ## DO not confuse vocab_pad_idx thing, for embeddings src and tgttokens pads have been changed
     srccopytargets = batch["src_copy_indices"][2:end,:]  
     tgtcopytargets = batch["tgt_copy_indices"][2:end,:]
+    parsermask = copy(tgttokens[:,2:end])
+    parsermask[parsermask.==decodervocab_pad_idx] .= 1
+    parsermask[parsermask.!=decodervocab_pad_idx] .= 0
+    edgeheads = batch["head_indices"][1:end-2,:]'
+    edgelabels = batch["head_tags"][1:end-2, :]'
     deleteat!(new_state, 1)
-    return  ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets) , new_state)
+    return  ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels) , new_state)
 end
 function length(d::Dataset); return d.totalbatch; end
 
 
 function trainmodel(epochs)
-    batches = read_batches_from_h5("../data/data-100batches.h5")  # TODO: prepare batches dynamically, for now load them
+    batches = read_batches_from_h5("../data/data-10batches.h5")  # TODO: prepare batches dynamically, for now load them
     trn = Dataset(batches)
     trnbatches = collect(trn)
-    model = BaseModel(H,Ex,Ey,L,vocabsize, edgenode_hiddensize, edgelabel_hiddensize, num_labels; bidirectional=true, dropout=Pdrop)
-    epoch = adam(model, ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets) for (srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets) in trnbatches))
+    model = BaseModel(H,Ex,Ey,L,vocabsize, edgenode_hiddensize, edgelabel_hiddensize, num_edgelabels; bidirectional=true, dropout=Pdrop)
+    epoch = adam(model, ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels) for (srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels) in trnbatches))
     ctrn = collect(trn)
     traindata = (collect(flatten(shuffle!(ctrn) for i in 1:epochs)))
     progress!(adam(model,traindata), seconds=10) do y

@@ -21,58 +21,28 @@ end
 
 # * `input_e`: the encoder input, edgenode_h
 # * `input_d`: the decoder input, edgenode_m
-# * `mask_e`: the encoder mask
-# * `mask_d`: the decoder mask
+# * `mask`: the encoder, decoder masks
 #
-function (ba::BiaffineAttention)(input_e, input_d; mask_e=nothing, mask_d=nothing)
-    # input_e: (encoder_inputsize, B, Tencoder)
-    # input_d: (decoder_inputsize, B, Tdecoder)
-    # mask_e: (Tencoder, B)
-    # mask_d: (Tdecoder, B)
-    # -> output: (B, Tencoder, Tdecoder, num_labels)
-
-    _, B, Tencoder = size(input_e)
-    _, B, Tdecoder = size(input_d)
-
-    decoder_inputsize, encoder_inputsize, num_labels = size(ba.u)
-
-    out_e = mmul(ba.we, input_e)                                                # -> (num_labels, B, Tencoder)
-    out_d = mmul(ba.wd, input_d)                                                # -> (num_labels, B, Tdecoder)
-
-    input_d = permutedims(input_d, [2,3,1])                                     # -> (B,Tdecoder, decoder_inputsize)
-    input_d = reshape(input_d, (size(input_d,1) * size(input_d,2),:))           # -> (B*Tdecoder, decoder_inputsize)
-
-    a = reshape(ba.u, size(ba.u,1),size(ba.u,2) * size(ba.u,3))                 # -> (decoder_inputsize, decoder_inputsize*num_labels)
-    output = input_d * a                                                        # -> (B*Tdecoder, decoder_inputsize*num_labels)
-    output = reshape(output, (B, Tdecoder, decoder_inputsize, num_labels))      # -> (B,Tdecoder, decoder_inputsize,num_labels)
-
-    output = permutedims(output, [2,4,3,1])                                     # -> (Tdecoder,num_labels, decoder_inputsize, B)
-    output = reshape(output, (size(output,1) * 
-                size(output,2), size(output,3), size(output,4)))                # -> (Tdecoder*num_labels, decoder_inputsize, B)
-    input_e = permutedims(input_e, [1,3,2])                                     # -> (decoder_inputsize, Tencoder, B)
-    output = bmm(output,input_e)                                                # -> (Tdecoder*num_labels, Tencoder, B)
-    output = reshape(output, (B, Tencoder, Tdecoder, num_labels))               # -> (B, Tencoder, Tdecoder, num_labels)
-    out_e = permutedims(out_e, [2,3,1])                                         # -> (B, Tencoder, num_labels)
-    out_e = reshape(out_e, (size(out_e,1), size(out_e,2), size(out_e,3), 1))    # -> (B, Tencoder, num_labels, 1)
-
-    output = output .+out_e                                                     # -> (B, Tencoder, Tdecoder, num_labels)
-    output = permutedims(output, [1,3,2,4])                                     # -> (B, Tdecoder, Tencoder, num_labels)
-    
-    out_d = permutedims(out_d, [2,3,1])                                         # -> (B, Tdecoder, num_labels)
-    out_d = reshape(out_d, (size(out_d,1), size(out_d,2), size(out_d,3), 1))    # -> (B, Tdecoder, num_labels,1)
-
-    output = output .+ out_d                                                    # -> (B, Tencoder, Tdecoder, num_labels)
-    output = output .+ ba.b
-
-    if mask_d !== nothing && mask_e !== nothing
-        mask_d = reshape(mask_d, (1, size(mask_d,1),size(mask_d,2),1))          # -> (1,Tdecoder,B,1)
-        output = permutedims(output, [2,3,1,4])                                 # -> (Tencoder,Tdecoder,B,num_labels)
-        output = output .* convert(_atype,mask_d)                               # -> (Tencoder,Tdecoder,B,num_labels)
-       
-        output = permutedims(output, [2,1,3,4])                                 # -> (Tdecoder,Tencoder,B,num_labels)
-        mask_e = reshape(mask_e, (1, size(mask_e,1),size(mask_e,2),1))          # -> (1,Tencoder,B,1)
-        output = output .* convert(_atype,mask_e)                               # -> (Tdecoder,Tencoder,B,num_labels)
-        output = permutedims(output, [3,2,1,4])                                 # -> (B,Tencoder,Tdecoder,num_labels)
+function (ba::BiaffineAttention)(input_e, input_d, mask)
+    edgenode_hiddensize= size(input_e,1); B,Ty = size(mask) 
+    ;@size ba.u (edgenode_hiddensize, edgenode_hiddensize,1) ;@size input_d (edgenode_hiddensize,B*Ty) ;@size mask (B,Ty)
+    out_e = mmul(ba.we, reshape(input_e, (:, B,Ty)))                ;@size out_e (1,B,Ty) # 1 is the number of crf layer
+    out_d = mmul(ba.wd, reshape(input_d, (:, B,Ty)))                ;@size out_d (1,B,Ty) # 1 is the number of crf layer
+    output = mmul(input_e', ba.u)                                   ;@size output (B*Ty, edgenode_hiddensize, 1) 
+    output = reshape(output, (B,Ty, edgenode_hiddensize, 1))            
+    output = permutedims(output, [2,3,1,4])                         ;@size output (Ty,edgenode_hiddensize,B, 1) 
+    input_d = reshape(input_d, (:, B, Ty,1))                        ;@size input_d (edgenode_hiddensize,B,Ty, 1)
+    input_d = permutedims(input_d, [1,3,2,4])                       ;@size input_d (edgenode_hiddensize,Ty,B, 1) 
+    output = bmm(output, input_d)                                   ;@size output  (Ty,Ty,B,1) # 1 is the number of crf layer  
+    out_d = reshape(permutedims(out_d, [3,2,1]), 1,Ty,B,1)          ;@size out_d   (1,Ty,B,1)
+    out_e = reshape(permutedims(out_e, [3,2,1]), 1,Ty,B,1)          ;@size out_e   (1,Ty,B,1)
+    output = output .+ out_d .+ out_e  .+  ba.b                     ;@size output  (Ty,Ty,B,1)
+    output = reshape(output, Ty,Ty,B)                               ;@size output  (Ty,Ty,B)
+    if mask !== nothing
+       rowmask = _atype(reshape(mask', (1,Ty,B)))
+       output  = output .* rowmask
+       colmask = _atype(reshape(mask', (Ty,1,B)))
+       output  = output .* colmask
     end
     return output
 end
