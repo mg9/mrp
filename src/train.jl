@@ -44,8 +44,8 @@ function iterate(d::Dataset, state=collect(1:d.totalbatch))
     srccopytargets = batch["src_copy_indices"][2:end,:]  
     tgtcopytargets = batch["tgt_copy_indices"][2:end,:]
     parsermask = copy(tgttokens[:,2:end])
-    parsermask[parsermask.==decodervocab_pad_idx] .= 1
     parsermask[parsermask.!=decodervocab_pad_idx] .= 0
+    parsermask[parsermask.==decodervocab_pad_idx] .= 1
     edgeheads = batch["head_indices"][1:end-2,:]'
     edgelabels = batch["head_tags"][1:end-2, :]'
     deleteat!(new_state, 1)
