@@ -1,6 +1,7 @@
 include("linear.jl")
 include("biaffine_attention.jl")
 include("bilinear.jl")
+include("maximum_spanning_tree.jl")
 
 _usegpu = gpu()>=0
 _atype = ifelse(_usegpu, KnetArray{Float32}, Array{Float64})
@@ -121,7 +122,9 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     minus_mask = settoinf.(minus_mask)'                                 ;@size minus_mask (Ty,B)
     minus_mask = reshape(minus_mask, (1,Ty,B))                                         
     _edgenode_scores = _edgenode_scores .+ _atype(minus_mask)           ;@size _edgenode_scores (Ty,Ty,B)               
- 
+    minus_mask = reshape(minus_mask, (Ty,1,B))                                         
+    _edgenode_scores = _edgenode_scores .+ _atype(minus_mask)           ;@size _edgenode_scores (Ty,Ty,B)               
+    
     ## Predictions of edge_heads
     ina(x) = return x[2]     # remove cartesian type 
     pred_edgeheads = argmax(value(_edgenode_scores), dims=2)  
@@ -169,4 +172,73 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
 
     @info "GraphDecoder batch metrics" UAS=UAS LAS=LAS EL=EL total_words=total_words
     return graphloss
+end
+
+# TODO: test this function
+function mst_decode(g, edge_label_h, edge_label_m, edge_node_scores, corefs, mask)
+    # Inputs: edge_label_h        -> Hh, B, Ty
+    #         edge_label_m        -> Hm, B, Ty
+    #         edge_node_scores    -> Ty, Ty, B
+    #         corefs              -> B, Ty
+    #         mask                -> B, Ty
+    # The inputs should ideally be on the cpu, because the operations are too expensive and not efficient on gpu
+    # Output: Array of B lists of heads for each sentence in the batch
+    #         Array of B lists which correspond to the labels of each edge
+
+    @assert size(edge_label_h)[2:end] == size(edge_label_m)[2:end]
+    B, Ty = size(edge_label_h)[2:end]
+    Hh = size(edge_label_h, 1)
+    Hm = size(edge_label_m, 1)
+
+    # First we need to duplicate edge_label_h Ty times to get H, B, Ty, Ty
+    # Along 4th axis
+    edge_label_h = [edge_label_h[i, j, k] for i=1:Hh, j=1:B, k=1:Ty, l=1:Ty]   # -> Hh, B, Ty, Ty
+    # Along 3rd axis
+    edge_label_m = [edge_label_m[i, j, k] for i=1:Hm, j=1:B, l=1:Ty, k=1:Ty]   # -> Hm, B, Ty, Ty
+
+    # Get label scores
+    edge_label_scores = g.edgelabel_bilinear(edge_label_h, edge_label_m)       # -> B, Ty, Ty, O
+    edge_label_scores = log.(softmax(edge_label_scores, dims=4))               # -> B, Ty, Ty, O
+
+    _etype = typeof(edge_node_scores)
+    # Set invalid elements to -inf
+    minus_mask = 1 .- mask
+    settoinf(x) = x==0.0 ? x= -Inf : x=x                                               
+    minus_mask = settoinf.(minus_mask)'                                 ;@size minus_mask (Ty,B)
+    minus_mask = reshape(minus_mask, (1,Ty,B))                                         
+    edge_node_scores = edge_node_scores .+ _etype(minus_mask)           ;@size edge_node_scores (Ty,Ty,B)
+    minus_mask = reshape(minus_mask, (Ty, 1, B))
+    edge_node_scores = edge_node_scores .+ _etype(minus_mask)           ;@size edge_node_scores (Ty,Ty,B)
+    # TODO: Double check that the softmax is on the 1st dim
+    # Original line: https://github.com/sheng-z/stog/blob/f541f004d3c016ae3#5099b708979b1bca15a13bc/stog/modules/decoders/deep_biaffine_graph_decoder.py#L179
+    edge_node_scores = log.(softmax(edge_node_scores, dims=1))                 # -> Ty, Ty, B
+    edge_node_scores = permutedims(edge_node_scores, [3, 1, 2])                # -> B, Ty, Ty
+
+    batch_energy = exp.(reshape(edge_node_scores, B, Ty, Ty, 1).+edge_label_scores)  # -> B, Ty, Ty, O
+
+    all_heads = []
+    all_labels = []
+
+    for idx in 1:B
+        energy = batch_energy[idx, :, :, :]
+        energy = reshape(Ty, Ty, O)                                            # -> Ty, Ty, O
+        # In the original implementation they set the energy of first node with all other nodes to 0
+        # so the head does not have more than one child.   
+
+        # Assuming that mask is 1 for pads
+        N = Ty-sum(mask[idx, :])+1  # TODO: double check this. +1 because the first node is a pad as well, 
+        if corefs != nothing
+            heads, labels = decode_mst(energy, N, true)
+        else            
+            heads, labels = decode_mst_with_corefs(energy, corefs, N, true)
+        end
+
+        heads[1] = 0
+        labels[1] = 0
+
+        push!(all_heads, heads)
+        push!(all_labels, labels)
+    end
+
+    all_heads, all_labels
 end
