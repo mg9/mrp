@@ -7,8 +7,8 @@ using Random
 START_SYMBOL = bos = "@start@"
 END_SYMBOL = eos =  "@end@"
 
-ENCODER_TOKEN_VOCAB_SIZE = 18002
-DECODER_TOKEN_VOCAB_SIZE = 12202
+ENCODER_TOKEN_VOCAB_SIZE = 3406 #18002
+DECODER_TOKEN_VOCAB_SIZE = 2908 #12202
 encodervocab_pad_idx =ENCODER_TOKEN_VOCAB_SIZE          ## DO not confuse about vocab_pad_idx, only srctokens and tgttokens pads have been changed for embedding layers
 decodervocab_pad_idx =DECODER_TOKEN_VOCAB_SIZE
 
@@ -63,6 +63,90 @@ end
 
 
 
+
+function make_instance(d::AMRDataset, amr, evaluation=false)
+    amrgraph_buildextras(amr.graph)
+    max_tgt_length = Any
+    if evaluation; max_tgt_length = nothing
+    else; max_tgt_length = 60; end
+    list_data = amrgraph_getlistdata(amr, bos=START_SYMBOL, eos=END_SYMBOL, bert_tokenizer=d.word_splitter, max_tgt_length=max_tgt_length)
+
+    #TODO: BERT thing for src_token_ids & src_token_subword_index
+
+    srccharacters= []
+    for token in list_data["src_tokens"]
+        for c in token; push!(srccharacters,c); end
+    end
+
+    tgtcharacters= []
+    for token in list_data["tgt_tokens"]
+       for c in token; push!(tgtcharacters,c); end
+    end
+
+    vocab_addtokens(d.srcvocab, list_data["src_tokens"])
+    vocab_addtokens(d.tgtvocab, list_data["tgt_tokens"])
+    vocab_addtokens(d.srccharactervocab, srccharacters)
+    vocab_addtokens(d.tgtcharactervocab, tgtcharacters)
+    vocab_addtokens(d.srcpostagvocab, list_data["src_pos_tags"])
+    vocab_addtokens(d.tgtpostagvocab, list_data["tgt_pos_tags"])
+    vocab_addtokens(d.headtagsvocab, list_data["head_tags"]) 
+
+    d.number_pos_tags += length(list_data["tgt_pos_tags"])
+    for tag in list_data["tgt_pos_tags"]
+        if tag != DEFAULT_OOV_TOKEN; d.number_non_oov_pos_tags +=1; end
+    end
+
+
+    function findsrccopymax()
+        maxval = 0
+         for (i,t) in list_data["src_copy_map"]
+           if t>maxval
+               maxval=t
+           end
+        end
+        return maxval
+    end
+    maxval= findsrccopymax()
+
+
+    srccopymap = zeros(length(list_data["src_copy_map"]), length(list_data["src_copy_map"]))
+    for (k,v) in list_data["src_copy_map"]; srccopymap[k,v] = 1; end
+    srccopymap = hcat(zeros(size(srccopymap,1),1), srccopymap)
+    srccopymap = vcat(zeros(1,size(srccopymap,2)), srccopymap)
+    tgtcopymap = zeros(length(list_data["tgt_copy_map"]), length(list_data["tgt_copy_map"]))
+    for (k,v) in list_data["tgt_copy_map"]; tgtcopymap[k,v] = 1; end
+   
+    # TODO: Look again sequenceLabelField in original code
+    vocab_addtokens(d.srcmustcopytagsvocab, list_data["src_must_copy_tags"]) 
+    vocab_addtokens(d.srccopyindicesvocab, list_data["src_copy_indices"]) 
+    vocab_addtokens(d.tgtcopyindicesvocab, list_data["tgt_copy_indices"]) ## coref_tags
+    vocab_addtokens(d.tgtcopymaskvocab, list_data["tgt_copy_mask"]) ## coref_mask_tags
+    vocab_addtokens(d.headindicesvocab, list_data["head_indices"]) 
+
+    instance = Dict()
+    instance["head_tags"] = vocab_indexsequence(d.headtagsvocab, list_data["head_tags"])
+    instance["encoder_tokens"] = vocab_indexsequence(d.srcvocab, list_data["src_tokens"])
+    instance["decoder_characters"] = vocab_indexsequence(d.tgtcharactervocab, tgtcharacters)
+    instance["tgt_pos_tags"] = vocab_indexsequence(d.tgtpostagvocab, list_data["tgt_pos_tags"])
+    instance["encoder_characters"] = vocab_indexsequence(d.srccharactervocab, srccharacters)
+    instance["decoder_tokens"] = vocab_indexsequence(d.tgtvocab, list_data["tgt_tokens"])
+    instance["src_pos_tags"] = vocab_indexsequence(d.srcpostagvocab, list_data["src_pos_tags"])
+    instance["tgt_copy_mask"] = list_data["tgt_copy_mask"] ## TODO: is that correct??
+    instance["tgt_copy_indices"] = list_data["tgt_copy_indices"] ## TODO: is that correct??
+    instance["src_must_copy_tags"] = list_data["src_must_copy_tags"] ## TODO: is that correct??
+    instance["src_copy_indices"] = list_data["src_copy_indices"] ## TODO: is that correct??
+    instance["head_indices"] = list_data["head_indices"] ## TODO: is that correct??
+    instance["src_token_ids"] = nothing # BERT
+    instance["src_token_subword_index"] = nothing #BERT
+    instance["tgt_copy_map"]  = tgtcopymap
+    instance["src_copy_map"]  = srccopymap
+
+    return instance
+end
+
+
+
+
 function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances), collect(1:d.ninstances)))
     new_state = state
     new_state_len = length(new_state) 
@@ -91,6 +175,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     src_copy_map = []
 
     for (i,amr) in enumerate(amrs_raw)
+        println("i: $i")
         instance = make_instance(d, amr)
         push!(head_tags, instance["head_tags"])
         push!(tgt_copy_mask, instance["tgt_copy_mask"])
@@ -177,6 +262,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     #encoder_characters = vcat(encoder_characters...)
     #src_must_copy_tags = vcat(src_must_copy_tags...)
 
+   
     encoder_tokens = Integer.(encoder_tokens)
     decoder_tokens = Integer.(decoder_tokens)
     src_copy_map = Integer.(src_copy_map)
@@ -187,10 +273,12 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     head_tags = Integer.(head_tags)
 
 
+    encoder_tokens[encoder_tokens.==0] .= encodervocab_pad_idx                           # replace pad idx 0 with the latest index of array
+    decoder_tokens[decoder_tokens.==0] .= decodervocab_pad_idx                           # replace pad idx 0 with the latest index of array
+
+
     srctokens = encoder_tokens'                                                # -> (B,Tx)
     tgttokens = decoder_tokens[1:end-1,:]'                                     # -> (B,Ty)
-    srctokens[srctokens.==0] .= encodervocab_pad_idx                           # replace pad idx 0 with the latest index of array
-    tgttokens[tgttokens.==0] .= decodervocab_pad_idx                           # replace pad idx 0 with the latest index of array
     srcattentionmaps = permutedims(src_copy_map, [2,1,3])[2:end-1,:,:]         # -> (Tx,Tx+2, B)
     tgtattentionmaps = permutedims(tgt_copy_map, [2,1,3])[2:end,:,:]           # -> (Ty,Ty+1, B)
     generatetargets = decoder_tokens[2:end,:]       # -> (Ty,B) ## DO not confuse vocab_pad_idx thing, for embeddings src and tgttokens pads have been changed
@@ -202,9 +290,6 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     edgeheads = head_indices[1:end,:]'
     edgelabels = head_tags[1:end, :]'
 
-    generatetargets =generatetargets .+1
-    srccopytargets = srccopytargets .+1
-    tgtcopytargets = tgtcopytargets .+1
 
     deleteat!(new_state, 1:d.batchsize)
     return  ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels) , new_state)
@@ -216,87 +301,6 @@ function length(d::AMRDataset)
     return r == 0 ? d : d+1
 end
 
-
-
-function make_instance(d::AMRDataset, amr, evaluation=false)
-    amrgraph_buildextras(amr.graph)
-    max_tgt_length = Any
-    if evaluation; max_tgt_length = nothing
-    else; max_tgt_length = 60; end
-    list_data = amrgraph_getlistdata(amr, bos=START_SYMBOL, eos=END_SYMBOL, bert_tokenizer=d.word_splitter, max_tgt_length=max_tgt_length)
-
-    #TODO: BERT thing for src_token_ids & src_token_subword_index
-
-    srccharacters= []
-    for token in list_data["src_tokens"]
-        for c in token; push!(srccharacters,c); end
-    end
-
-    tgtcharacters= []
-    for token in list_data["tgt_tokens"]
-       for c in token; push!(tgtcharacters,c); end
-    end
-
-    vocab_addtokens(d.srcvocab, list_data["src_tokens"])
-    vocab_addtokens(d.tgtvocab, list_data["tgt_tokens"])
-    vocab_addtokens(d.srccharactervocab, srccharacters)
-    vocab_addtokens(d.tgtcharactervocab, tgtcharacters)
-    vocab_addtokens(d.srcpostagvocab, list_data["src_pos_tags"])
-    vocab_addtokens(d.tgtpostagvocab, list_data["tgt_pos_tags"])
-    vocab_addtokens(d.headtagsvocab, list_data["head_tags"]) 
-
-    d.number_pos_tags += length(list_data["tgt_pos_tags"])
-    for tag in list_data["tgt_pos_tags"]
-        if tag != DEFAULT_OOV_TOKEN; d.number_non_oov_pos_tags +=1; end
-    end
-
-
-    function findsrccopymax()
-        maxval = 0
-         for (i,t) in list_data["src_copy_map"]
-           if t>maxval
-               maxval=t
-           end
-        end
-        return maxval
-    end
-    maxval= findsrccopymax()
-
-
-    srccopymap = zeros(length(list_data["src_copy_map"]), length(list_data["src_copy_map"]))
-    for (k,v) in list_data["src_copy_map"]; srccopymap[k,v] = 1; end
-
-    tgtcopymap = zeros(length(list_data["tgt_copy_map"]), length(list_data["tgt_copy_map"]))
-    for (k,v) in list_data["tgt_copy_map"]; tgtcopymap[k,v] = 1; end
-   
-    # TODO: Look again sequenceLabelField in original code
-    vocab_addtokens(d.srcmustcopytagsvocab, list_data["src_must_copy_tags"]) 
-    vocab_addtokens(d.srccopyindicesvocab, list_data["src_copy_indices"]) 
-    vocab_addtokens(d.tgtcopyindicesvocab, list_data["tgt_copy_indices"]) ## coref_tags
-    vocab_addtokens(d.tgtcopymaskvocab, list_data["tgt_copy_mask"]) ## coref_mask_tags
-    vocab_addtokens(d.headindicesvocab, list_data["head_indices"]) 
-
-    instance = Dict()
-    instance["head_tags"] = vocab_indexsequence(d.headtagsvocab, list_data["head_tags"])
-    instance["encoder_tokens"] = vocab_indexsequence(d.srcvocab, list_data["src_tokens"])
-    instance["decoder_characters"] = vocab_indexsequence(d.tgtcharactervocab, tgtcharacters)
-    instance["tgt_pos_tags"] = vocab_indexsequence(d.tgtpostagvocab, list_data["tgt_pos_tags"])
-    instance["encoder_characters"] = vocab_indexsequence(d.srccharactervocab, srccharacters)
-    instance["decoder_tokens"] = vocab_indexsequence(d.tgtvocab, list_data["tgt_tokens"])
-    instance["src_pos_tags"] = vocab_indexsequence(d.srcpostagvocab, list_data["src_pos_tags"])
-    instance["tgt_copy_mask"] = list_data["tgt_copy_mask"] ## TODO: is that correct??
-    instance["tgt_copy_indices"] = list_data["tgt_copy_indices"] ## TODO: is that correct??
-    instance["src_must_copy_tags"] = list_data["src_must_copy_tags"] ## TODO: is that correct??
-    instance["src_copy_indices"] = list_data["src_copy_indices"] ## TODO: is that correct??
-    instance["head_indices"] = list_data["head_indices"] ## TODO: is that correct??
-    instance["src_token_ids"] = nothing # BERT
-    instance["src_token_subword_index"] = nothing #BERT
-    instance["tgt_copy_map"]  = tgtcopymap
-    instance["src_copy_map"]  = srccopymap
-
-
-    return instance
-end
 
 
 

@@ -13,11 +13,11 @@ end
 
 function Vocab(srctokens)
     token_to_idx = Dict()
-    token_to_idx[DEFAULT_PADDING_TOKEN] = 1
-    token_to_idx[DEFAULT_OOV_TOKEN] = 2
+    token_to_idx[DEFAULT_PADDING_TOKEN] = 0
+    token_to_idx[DEFAULT_OOV_TOKEN] = 1
     idx_to_token = Dict()
-    idx_to_token[1] = DEFAULT_PADDING_TOKEN
-    idx_to_token[2] = DEFAULT_OOV_TOKEN
+    idx_to_token[0] = DEFAULT_PADDING_TOKEN
+    idx_to_token[1] = DEFAULT_OOV_TOKEN
     vocabsize = 2
     if isa(srctokens, Array)
         for token in srctokens
@@ -58,8 +58,7 @@ end
 
 function vocab_getcopymap(vocab::Vocab, src_tokens)
     copymap = []
-    srcindices = pushfirst!(vocab_indexsequence(vocab, src_tokens), vocab.token_to_idx[DEFAULT_PADDING_TOKEN])
-    srcindices = pushfirst!(srcindices, vocab.token_to_idx[DEFAULT_OOV_TOKEN])
+    srcindices = pushfirst!(vocab_indexsequence(vocab, src_tokens), vocab.token_to_idx[DEFAULT_OOV_TOKEN])
 
     for (src_idx, src_token_idx) in enumerate(srcindices)
         push!(copymap, (src_idx, src_token_idx))
