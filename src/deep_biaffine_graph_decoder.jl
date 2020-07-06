@@ -50,6 +50,7 @@ end
 function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabels)
     Hy,B,Ty = size(hiddens,1), size(hiddens,2), size(hiddens,3)+1
 
+    
     ;@size parsermask (B, Ty-1); @size edgeheads (B, Ty-1);  @size edgelabels (B, Ty-1)
     head_sentinel = param(Hy, B, 1)  
     hiddens = cat(head_sentinel, hiddens, dims=3)                                           ;@size hiddens (Hy,B,Ty)

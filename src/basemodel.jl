@@ -191,7 +191,7 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
     @info "PointerGenerator batch metrics" loss=sumloss all_acc=accuracy src_acc=srccopy_accuracy tgt_acc=tgtcopy_accuracy
 
     hiddens = cat(hiddens...,dims=3) ;@size hiddens (Hy,B,Ty-1)
-    graphloss = m.g(hiddens, parsermask, edgeheads, edgelabels)
-    sumloss += graphloss
+    #graphloss = m.g(hiddens, parsermask, edgeheads, edgelabels)
+    #sumloss += graphloss
     return sumloss
 end
