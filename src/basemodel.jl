@@ -72,12 +72,16 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         # Pgen: Probability distribution over the vocabulary.
         scores = m.p.projection(srcattnvector)                          ; @size scores (vocabsize,B);
         #scores[decodervocab_pad_idx, :] = scores[decodervocab_pad_idx, :] .- Inf  #TODO: fix here for @diff
+        # Make score of decoder pad -Inf
+        infvec = zeros(size(scores,1))
+        infvec[decodervocab_pad_idx]=Inf
+        scores = scores .- convert(_atype,infvec) 
         vocab_probs = softmax(scores, dims=1)                           ; @size vocab_probs (vocabsize,B)
         vocab_probs = reshape(vocab_probs, (vocabsize, B, 1))           ; @size vocab_probs (vocabsize,B,1);
         scaled_vocab_probs = vocab_probs .* p_gen                       ; @size scaled_vocab_probs (vocabsize,B,1);
         scaled_vocab_probs = permutedims(scaled_vocab_probs, [3,1,2])   ; @size scaled_vocab_probs (1,vocabsize,B);
 
-        # Psrc: 
+        # Psrc: 
         srcattentions = reshape(srcattentions, (Tx,B,1))                ; @size srcattentions (Tx,B,1);
         scaled_srcattentions = srcattentions .* p_copysrc               ; @size scaled_srcattentions (Tx,B,1); @size srcattentionmaps (Tx,Tx+2,B); 
         scaled_copysrc_probs = bmm(permutedims(scaled_srcattentions, [3,1,2]), _atype(srcattentionmaps)) ; @size scaled_copysrc_probs (1,Tx+2,B);  # Tx+2 is the dynamic srcvocabsize
@@ -91,14 +95,18 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
 
                   
         #TODO: Do invalid indexes part.
-        probs = cat(scaled_vocab_probs, scaled_copysrc_probs, scaled_copytgt_probs, dims=2)  ; @size probs (1,vocabsize+Tx+2+Ty+1,B)                          
-        #probs[:, vocabsize+Tx+3, :] = 0             # Set the probability of coref NA to 0. #TODO: fix here for @diff
+        probs = cat(scaled_vocab_probs, scaled_copysrc_probs, scaled_copytgt_probs, dims=2)  ; @size probs (1,vocabsize+Tx+2+Ty+1,B)
+        # Set probability of coref NA to 0
+        NAvec = ones(1, size(probs, 2), 1)
+        NAvec[vocabsize+Tx+3] = 0
+        # After broadcasting the probability of coref NA is set to 0
+        probs = probs .* convert(_atype,NAvec)
         getind(cartindx) = return cartindx[2]                                                            
         predictions = getind.(argmax(softmax(value(probs),dims=2), dims=2))  ;@size predictions (1, 1, B)
         predictions = _atype(reshape(predictions, (1,B)))
 
 
-        ### PointerGenerator Loss
+        ### PointerGenerator Loss
         _generatetargets  = generatetargets[t:t,:]                   ; @size _generatetargets (1, B)
         _srccopytargets   = srccopytargets[t:t,:]                    ; @size _srccopytargets  (1, B) 
         _tgtcopytargets   = tgtcopytargets[t:t,:]                    ; @size _tgtcopytargets  (1, B)
@@ -168,7 +176,7 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         num_correct_source_copy =  sum((pred_eq .* non_tgtcopy_mask .* srccopy_mask) .==1)
         num_correct_source_point = sum( ((predictions .>= vocabsize+1) .* (predictions .< vocabsize+src_dynamic_vocabsize+1)  .*non_tgtcopy_mask .*srccopy_mask .* non_pad_mask) .== 1)
 
-        ### PointerGenerator Metrics and Statistics
+        ### PointerGenerator Metrics and Statistics
         n_words += num_non_pad
         n_correct += num_correct_pred
         n_source_copies += num_source_copy

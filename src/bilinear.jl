@@ -20,49 +20,52 @@ function BiLinear(left_features::Int, right_features::Int, out_features::Int)
 end
 
 function (bl::BiLinear)(input_left, input_right)
-    # input_left: (HL, B, T): edgelabel_h (HL: edgelabel_hiddensize)
-    # input_right: (HR, B, T): edgelabel_m (HR: edgelabel_hiddensize) 
-    # -> Output: (B, T, O) (O: out_features)
+    # input_left: (HL, B...): edgelabel_h (HL: edgelabel_hiddensize)
+    # input_right: (HR, B...): edgelabel_m (HR: edgelabel_hiddensize) 
+    # -> Output: (B..., O) (O: out_features)
     # HL and HR should be the same for our usage, but this function generalizes to situations with
     # different sizes
     
-    HL, B, T = size(input_left)
+    HL = size(input_left, 1)
     HR = size(input_right, 1)
     O = size(bl.u,2)
     @assert size(input_right)[2:end]==size(input_left)[2:end]
     @assert HL==size(bl.u,1)
     @assert HR==size(bl.u,3)
+    B = size(input_right)[2:end]
+    # S = Π(B...)
     
-    input_left = reshape(input_left, (HL, :))                                   # -> HL, (BxT)
+    input_left = reshape(input_left, (HL, :))                                   # -> HL, S
     
     # Calculate x'U, or the left half of x'Uy
     # inputs: input_left -> HL, (BxT) -> Transpose    -> (BxT), HL
     #         bl.u       -> HL, O, HR -> will reshape -> HL, (OxHR)     
-    left = input_left' * reshape(bl.u, (HL, :))                                 # -> (BxT), (OxHR)
-    left = reshape(left, (B, T, O, HR))                                         # -> B, T, O, HR
-    left = permutedims(left, [3, 4, 1, 2])                                      # -> O, HR, B, T
+    left = input_left' * reshape(bl.u, (HL, :))                                 # -> S, (OxHR)
+    left = reshape(left, (:, O, HR))                                            # -> S, O, HR
+    left = permutedims(left, [2, 3, 1])                                         # -> O, HR, S
     
-    input_right = reshape(input_right, (HR, 1, B, T))                           # -> HR, 1, B, T
+    input_right = reshape(input_right, (HR, 1, :))                              # -> HR, 1, S
     # Calculate x'U times y
-    out = bmm(left, input_right)                                                # -> O, 1, B, T
+    out = bmm(left, input_right)                                                # -> O, 1, S
     
-    out = reshape(out, (O, B, T))                                               # -> O, B, T
+    out = reshape(out, (O, :))                                                  # -> O, S
     # add the bias                                                             
-    out = out .+ bl.b                                                           # -> O, B, T
+    out = out .+ bl.b                                                           # -> O, S
     
     # reshape for the next operation
-    input_left = reshape(input_left, (HL, B*T))
-    input_right = reshape(input_right, (HR, (B*T)))
+    input_left = reshape(input_left, (HL, :))
+    input_right = reshape(input_right, (HR, :))
     
-    linear_out = bl.wl*input_left + bl.wr*input_right                           # -> O, B*T
-    linear_out = reshape(linear_out, (O, B, T))
+    linear_out = bl.wl*input_left + bl.wr*input_right                           # -> O, S
+    linear_out = reshape(linear_out, (O, :))
     
     # This is used in the paper (Extra addition to regular bilinear)
-    out = out .+ linear_out                                                     # -> O, B, T
+    out = out .+ linear_out                                                     # -> O, S
               
+    out = permutedims(out, [2, 1])                                              # -> S, O
     
     # Double check the shape we want. For now, it will be B, T, O
-    out = permutedims(out, [2, 3, 1])                                           # -> B, T, O
+    out = reshape(out, B..., O)                                                 # -> B..., O
 end
 
 function slowBilinear(bl::BiLinear, input_left, input_right)

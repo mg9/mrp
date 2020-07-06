@@ -34,15 +34,9 @@ trnamrs = read_preprocessed_files(train_path)
 devamrs = read_preprocessed_files(dev_path)
 testamrs = read_preprocessed_files(test_path)
 
-trn  = AMRDataset(devamrs, 4)
+trn  = AMRDataset(devamrs, 8)
 dev  = AMRDataset(devamrs, 8)
 test = AMRDataset(testamrs, 16)
-
-
-
-dev_path = "../data/AMR/amr_2.0/dev.txt.features.preproc"
-devamrs = read_preprocessed_files(dev_path)
-dev  = AMRDataset(devamrs, 8)
 
 
 function trainmodel(epochs)
