@@ -71,7 +71,6 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
 
         # Pgen: Probability distribution over the vocabulary.
         scores = m.p.projection(srcattnvector)                          ; @size scores (vocabsize,B);
-        #scores[decodervocab_pad_idx, :] = scores[decodervocab_pad_idx, :] .- Inf  #TODO: fix here for @diff
         # Make score of decoder pad -Inf
         infvec = zeros(size(scores,1))
         infvec[decodervocab_pad_idx]=Inf

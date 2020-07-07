@@ -6,7 +6,7 @@ penman = pyimport("penman")
 nx = pyimport("networkx")
 re = pyimport("re")
 
-# Disable inverting ':mod' relation. ##TODO
+# Disable inverting ':mod' relation.
 penman.AMRCodec._inversions = delete!(penman.AMRCodec._inversions, "domain")
 penman.AMRCodec._deinversions = delete!(penman.AMRCodec._deinversions, "mod")
 amr_codec = penman.AMRCodec(indent=6)

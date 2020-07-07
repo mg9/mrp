@@ -7,8 +7,8 @@ using Random
 START_SYMBOL = bos = "@start@"
 END_SYMBOL = eos =  "@end@"
 
-ENCODER_TOKEN_VOCAB_SIZE = 3406 #18002
-DECODER_TOKEN_VOCAB_SIZE = 2908 #12202
+ENCODER_TOKEN_VOCAB_SIZE = 18002
+DECODER_TOKEN_VOCAB_SIZE = 12202
 encodervocab_pad_idx =ENCODER_TOKEN_VOCAB_SIZE          ## DO not confuse about vocab_pad_idx, only srctokens and tgttokens pads have been changed for embedding layers
 decodervocab_pad_idx =DECODER_TOKEN_VOCAB_SIZE
 
@@ -37,7 +37,7 @@ mutable struct AMRDataset
 end
 
 
-function AMRDataset(amrinstances, batchsize; shuffled=true, word_splitter=nothing)
+function AMRDataset(amrinstances, batchsize; shuffled=false, word_splitter=nothing)
     word_splitter= nothing #TODO: nothing until BERT time 
     _number_bert_ids = 0
     _number_bert_oov_ids = 0
@@ -55,12 +55,19 @@ function AMRDataset(amrinstances, batchsize; shuffled=true, word_splitter=nothin
     tgtcopyindicesvocab = Vocab([])
     headtagsvocab = Vocab([])
     headindicesvocab = Vocab([])
+
+    amrinstances =  sort(collect(amrinstances),by=x->x.tokens, rev=true)
     AMRDataset(amrinstances, length(amrinstances), batchsize,shuffled, word_splitter,  _number_bert_ids, _number_bert_oov_ids, _number_non_oov_pos_tags,_number_pos_tags,
     srcvocab, srccharactervocab, srcpostagvocab, srcmustcopytagsvocab, srccopyindicesvocab, tgtvocab, tgtcharactervocab, tgtpostagvocab, tgtcopymaskvocab, tgtcopyindicesvocab,
     headtagsvocab, headindicesvocab)
 end
 
-
+function Dataset(sents, batchsize)
+    dsents =  sort(collect(sents),by=x->x.sentencelength, rev=true)
+    i(x) = return x.id
+    ids = i.(dsents)
+    Dataset(dsents, batchsize, ids)
+end
 
 
 
@@ -95,18 +102,6 @@ function make_instance(d::AMRDataset, amr, evaluation=false)
     for tag in list_data["tgt_pos_tags"]
         if tag != DEFAULT_OOV_TOKEN; d.number_non_oov_pos_tags +=1; end
     end
-
-
-    function findsrccopymax()
-        maxval = 0
-         for (i,t) in list_data["src_copy_map"]
-           if t>maxval
-               maxval=t
-           end
-        end
-        return maxval
-    end
-    maxval= findsrccopymax()
 
 
     srccopymap = zeros(length(list_data["src_copy_map"]), length(list_data["src_copy_map"]))
@@ -175,7 +170,6 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     src_copy_map = []
 
     for (i,amr) in enumerate(amrs_raw)
-        println("i: $i")
         instance = make_instance(d, amr)
         push!(head_tags, instance["head_tags"])
         push!(tgt_copy_mask, instance["tgt_copy_mask"])
@@ -273,17 +267,17 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     head_tags = Integer.(head_tags)
 
 
-    encoder_tokens[encoder_tokens.==0] .= encodervocab_pad_idx                           # replace pad idx 0 with the latest index of array
-    decoder_tokens[decoder_tokens.==0] .= decodervocab_pad_idx                           # replace pad idx 0 with the latest index of array
+    encoder_tokens[encoder_tokens.==0] .= encodervocab_pad_idx                          # replace pad idx 0 with the latest index of array
+    decoder_tokens[decoder_tokens.==0] .= decodervocab_pad_idx                          # replace pad idx 0 with the latest index of array
 
 
-    srctokens = encoder_tokens'                                                # -> (B,Tx)
-    tgttokens = decoder_tokens[1:end-1,:]'                                     # -> (B,Ty)
-    srcattentionmaps = permutedims(src_copy_map, [2,1,3])[2:end-1,:,:]         # -> (Tx,Tx+2, B)
-    tgtattentionmaps = permutedims(tgt_copy_map, [2,1,3])[2:end,:,:]           # -> (Ty,Ty+1, B)
-    generatetargets = decoder_tokens[2:end,:]       # -> (Ty,B) ## DO not confuse vocab_pad_idx thing, for embeddings src and tgttokens pads have been changed
-    srccopytargets = src_copy_indices[2:end,:]      # -> (Ty,B)
-    tgtcopytargets = tgt_copy_indices[2:end,:]      # -> (Ty,B)
+    srctokens = encoder_tokens'                                                         # -> (B,Tx)
+    tgttokens = decoder_tokens[1:end-1,:]'                                              # -> (B,Ty)
+    srcattentionmaps = permutedims(src_copy_map, [2,1,3])[2:end-1,:,:]                  # -> (Tx,Tx+2, B)
+    tgtattentionmaps = permutedims(tgt_copy_map, [2,1,3])[2:end,:,:]                    # -> (Ty,Ty+1, B)
+    generatetargets = decoder_tokens[2:end,:]                                           # -> (Ty,B) 
+    srccopytargets = src_copy_indices[2:end,:]                                          # -> (Ty,B)
+    tgtcopytargets = tgt_copy_indices[2:end,:]                                          # -> (Ty,B)
     parsermask = copy(tgttokens[:,2:end])
     parsermask[parsermask.==decodervocab_pad_idx] .= 1
     parsermask[parsermask.!=decodervocab_pad_idx] .= 0
@@ -291,7 +285,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     edgelabels = head_tags[1:end, :]'
 
 
-    deleteat!(new_state, 1:d.batchsize)
+    deleteat!(new_state, 1:max_ind)
     return  ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels) , new_state)
 end
 
@@ -300,9 +294,6 @@ function length(d::AMRDataset)
     d, r = divrem(d.ninstances, d.batchsize)
     return r == 0 ? d : d+1
 end
-
-
-
 
 
 

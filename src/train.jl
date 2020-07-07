@@ -30,19 +30,19 @@ train_path = "../data/AMR/amr_2.0/train.txt.features.preproc"
 dev_path = "../data/AMR/amr_2.0/dev.txt.features.preproc"
 test_path = "../data/AMR/amr_2.0/test.txt.features.preproc"
 
-trnamrs = read_preprocessed_files(train_path) 
-devamrs = read_preprocessed_files(dev_path)
-testamrs = read_preprocessed_files(test_path)
+trnamrs = read_preprocessed_files(train_path) # 36519 instances
+devamrs = read_preprocessed_files(dev_path)   # 1368 instances
+testamrs = read_preprocessed_files(test_path) # 1371 instances
 
-trn  = AMRDataset(devamrs, 8)
-dev  = AMRDataset(devamrs, 8)
+trn  = AMRDataset(trnamrs, 8) 
+dev  = AMRDataset(devamrs, 16)
 test = AMRDataset(testamrs, 16)
 
 
 function trainmodel(epochs)
     model = BaseModel(H,Ex,Ey,L,vocabsize, edgenode_hiddensize, edgelabel_hiddensize, num_edgelabels; bidirectional=true, dropout=Pdrop)
-    batches = collect(dev)
-    println("Dataset created with path $dev_path", " with ", dev.ninstances, " instances")
+    batches = collect(dev) # use dev for now, since preparing train instances takes longer time
+    println("Dataset created with path $train_path", " with ", trn.ninstances, " instances")
     epoch = adam(model, 
            ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels)
             for (srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels) 
