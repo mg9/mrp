@@ -19,6 +19,7 @@ function (l::Embed)(x)
     l.w[:,x]
 end
 
+#=
 #input -> T x B
 #output -> embedsize x T x B
 @info "Testing Embed"
@@ -28,3 +29,4 @@ embed = Embed(vocabsize, embedsize)
 input = rand(1:100, T, B)
 output = embed(input)
 @test size(output) == (embedsize, T, B)
+=#

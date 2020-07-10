@@ -2,6 +2,7 @@ include("linear.jl")
 include("biaffine_attention.jl")
 include("bilinear.jl")
 include("maximum_spanning_tree.jl")
+include("metrics.jl")
 
 _usegpu = gpu()>=0
 _atype = ifelse(_usegpu, KnetArray{Float32}, Array{Float64})
@@ -14,6 +15,7 @@ struct DeepBiaffineGraphDecoder
     edgelabel_m_linear::Linear            # decoderhiddens(Hy, B, Ty) ->  (edgelabelhiddensize, B, Ty)
     biaffine_attention::BiaffineAttention # edgenode_h_linear, edgenode_m_linear, masks -> edgenode_scores
     edgelabel_bilinear::BiLinear          # edgelabel_h_linear, edgelabel_m_linear, masks -> edgelabel_scores
+    metrics::AMRMetrics
 end
 
 
@@ -32,7 +34,8 @@ function DeepBiaffineGraphDecoder(inputsize::Int, edgenodehiddensize::Int, edgel
     # TODO: dropout. encode_dropout = torch.nn.Dropout2d(p=dropout)
     biaffine_attention = BiaffineAttention(edgenodehiddensize, edgenodehiddensize)
     edgelabel_bilinear = BiLinear(edgelabelhiddensize, edgelabelhiddensize, num_labels)
-    DeepBiaffineGraphDecoder(edgenode_h_linear, edgenode_m_linear, edgelabel_h_linear, edgelabel_m_linear, biaffine_attention, edgelabel_bilinear)
+    metrics = AMRMetrics()
+    DeepBiaffineGraphDecoder(edgenode_h_linear, edgenode_m_linear, edgelabel_h_linear, edgelabel_m_linear, biaffine_attention, edgelabel_bilinear,metrics)
 end
 
 #=
@@ -139,7 +142,6 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
 
     ## Graph Decoder Metrics
     #TODO: other metrics s.t. unlabeled exact match, labeled exact match etc., move metrics part into a function
-    unlabeled_attachment_score = labeled_attachment_score = edgeloss = edgenode_loss = edgelabel_loss = 0.0
     ;@size _edgeheads (Ty,B) ;@size _edgelabels (Ty,B) ;@size parsermask (B,Ty) ;@size pred_edgeheads (B,Ty) ;@size pred_edgelabels (B,Ty)
     _edgeheads = _edgeheads'[:,2:end]               ;@size _edgeheads (B,Ty-1)
     _edgelabels = _edgelabels'[:,2:end]             ;@size _edgelabels (B,Ty-1)
@@ -151,27 +153,13 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     correct_indices = (_pred_edgeheads .== _edgeheads)  .*  (1 .-_parsermask)   ;@size correct_indices (B,Ty-1)
     correct_labels = (_pred_edgelabels .== _edgelabels) .* (1 .-_parsermask)    ;@size correct_labels (B,Ty-1)
     correct_labels_and_indices = correct_indices .* correct_labels              ;@size correct_labels_and_indices (B,Ty-1)
-    unlabeled_correct = sum(correct_indices)               
-    labeled_correct = sum(correct_labels_and_indices)
-    total_sentences = B
-    total_words =  sum(1 .- parsermask)
-    total_loss = graphloss
-    total_edgenode_loss = edgeheadloss
-    total_edgelabel_loss = edgelabelloss
-
-    if total_words > 0
-        unlabeled_attachment_score = float(unlabeled_correct) / float(total_words)
-        labeled_attachment_score = float(labeled_correct) / float(total_words)
-        edgeloss = float(total_loss) / float(total_words)
-        edgenode_loss = float(total_edgenode_loss) / float(total_words)
-        edgelabel_loss = float(total_edgelabel_loss) / float(total_words)
-    end
-
-    UAS = unlabeled_attachment_score
-    LAS = labeled_attachment_score
-    EL  = edgeloss
-
-    @info "GraphDecoder batch metrics" UAS=UAS LAS=LAS EL=EL total_words=total_words
+    g.metrics.unlabeled_correct = sum(correct_indices)               
+    g.metrics.labeled_correct = sum(correct_labels_and_indices)
+    g.metrics.total_sentences = B
+    g.metrics.total_words =  sum(1 .- parsermask)
+    g.metrics.total_loss = graphloss
+    g.metrics.total_edgenode_loss = edgeheadloss
+    g.metrics.total_edgelabel_loss = edgelabelloss
     return graphloss
 end
 

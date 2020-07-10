@@ -3,14 +3,8 @@ include("vocab.jl")
 import Base: length, iterate
 using Random
 
-
 START_SYMBOL = bos = "@start@"
 END_SYMBOL = eos =  "@end@"
-
-ENCODER_TOKEN_VOCAB_SIZE = 18002
-DECODER_TOKEN_VOCAB_SIZE = 12202
-encodervocab_pad_idx =ENCODER_TOKEN_VOCAB_SIZE          ## DO not confuse about vocab_pad_idx, only srctokens and tgttokens pads have been changed for embedding layers
-decodervocab_pad_idx =DECODER_TOKEN_VOCAB_SIZE
 
 mutable struct AMRDataset
     amrinstances
@@ -37,7 +31,7 @@ mutable struct AMRDataset
 end
 
 
-function AMRDataset(amrinstances, batchsize; shuffled=false, word_splitter=nothing)
+function AMRDataset(amrinstances, batchsize; shuffled=false, word_splitter=nothing, sort_by="tgttokens")
     word_splitter= nothing #TODO: nothing until BERT time 
     _number_bert_ids = 0
     _number_bert_oov_ids = 0
@@ -56,19 +50,16 @@ function AMRDataset(amrinstances, batchsize; shuffled=false, word_splitter=nothi
     headtagsvocab = Vocab([])
     headindicesvocab = Vocab([])
 
-    amrinstances =  sort(collect(amrinstances),by=x->x.tokens, rev=true)
+    if sort_by === "srctokens"
+        amrinstances =  sort(collect(amrinstances),by=x->length(x.tokens), rev=false)
+    elseif sort_by === "tgttokens"
+        amrinstances =  sort(collect(amrinstances),by=x->length(x.graph.variables()), rev=false)
+    end
+
     AMRDataset(amrinstances, length(amrinstances), batchsize,shuffled, word_splitter,  _number_bert_ids, _number_bert_oov_ids, _number_non_oov_pos_tags,_number_pos_tags,
     srcvocab, srccharactervocab, srcpostagvocab, srcmustcopytagsvocab, srccopyindicesvocab, tgtvocab, tgtcharactervocab, tgtpostagvocab, tgtcopymaskvocab, tgtcopyindicesvocab,
     headtagsvocab, headindicesvocab)
 end
-
-function Dataset(sents, batchsize)
-    dsents =  sort(collect(sents),by=x->x.sentencelength, rev=true)
-    i(x) = return x.id
-    ids = i.(dsents)
-    Dataset(dsents, batchsize, ids)
-end
-
 
 
 function make_instance(d::AMRDataset, amr, evaluation=false)
@@ -108,8 +99,13 @@ function make_instance(d::AMRDataset, amr, evaluation=false)
     for (k,v) in list_data["src_copy_map"]; srccopymap[k,v] = 1; end
     srccopymap = hcat(zeros(size(srccopymap,1),1), srccopymap)
     srccopymap = vcat(zeros(1,size(srccopymap,2)), srccopymap)
+
+
     tgtcopymap = zeros(length(list_data["tgt_copy_map"]), length(list_data["tgt_copy_map"]))
     for (k,v) in list_data["tgt_copy_map"]; tgtcopymap[k,v] = 1; end
+    tgtcopymap = hcat(zeros(size(tgtcopymap,1),1), tgtcopymap)
+    tgtcopymap = vcat(zeros(1,size(tgtcopymap,2)), tgtcopymap)
+
    
     # TODO: Look again sequenceLabelField in original code
     vocab_addtokens(d.srcmustcopytagsvocab, list_data["src_must_copy_tags"]) 
@@ -267,26 +263,36 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     head_tags = Integer.(head_tags)
 
 
+    encodervocab_pad_idx = d.srcvocab.vocabsize 
+    decodervocab_pad_idx = d.tgtvocab.vocabsize 
+
     encoder_tokens[encoder_tokens.==0] .= encodervocab_pad_idx                          # replace pad idx 0 with the latest index of array
     decoder_tokens[decoder_tokens.==0] .= decodervocab_pad_idx                          # replace pad idx 0 with the latest index of array
 
 
     srctokens = encoder_tokens'                                                         # -> (B,Tx)
-    tgttokens = decoder_tokens[1:end-1,:]'                                              # -> (B,Ty)
-    srcattentionmaps = permutedims(src_copy_map, [2,1,3])[2:end-1,:,:]                  # -> (Tx,Tx+2, B)
-    tgtattentionmaps = permutedims(tgt_copy_map, [2,1,3])[2:end,:,:]                    # -> (Ty,Ty+1, B)
-    generatetargets = decoder_tokens[2:end,:]                                           # -> (Ty,B) 
-    srccopytargets = src_copy_indices[2:end,:]                                          # -> (Ty,B)
-    tgtcopytargets = tgt_copy_indices[2:end,:]                                          # -> (Ty,B)
-    parsermask = copy(tgttokens[:,2:end])
-    parsermask[parsermask.==decodervocab_pad_idx] .= 1
-    parsermask[parsermask.!=decodervocab_pad_idx] .= 0
-    edgeheads = head_indices[1:end,:]'
-    edgelabels = head_tags[1:end, :]'
+    tgttokens = decoder_tokens'
+    srcattentionmaps =  src_copy_map[3:end,:,:]                                         # -> (Tx, Tx+2, B)
+    tgtattentionmaps = tgt_copy_map[2:end,:,:]                                          # -> (Ty,Ty+1, B)
+    generatetargets = decoder_tokens[2:end,:]  #exclude BOS                             # -> (Ty-1,B) 
+    srccopytargets = src_copy_indices[2:end,:]                                          # -> (Ty-1,B)
+    tgtcopytargets = tgt_copy_indices[2:end,:]                                          # -> (Ty-1,B)
+    
+    parsermask = copy(decoder_tokens'[:,2:end])                                       # -> (B, Ty-2)
+    #Pad END_SYMBOL and padding value also if there is any
+    end_symbol_idx= d.tgtvocab.token_to_idx["@end@"]
+    parsermask[parsermask.==end_symbol_idx] .= 0
+    parsermask[parsermask.==decodervocab_pad_idx] .= 0                                  
+    parsermask[parsermask.!=0] .= 1
+    edgeheads  = head_indices'                                                          # -> (B, Ty-2)
+    edgelabels = head_tags'                                                             # -> (B, Ty-2)
 
+    headpads= size(parsermask,2)-size(head_indices,1)
+    edgeheads = hcat(edgeheads, zeros(max_ind,headpads))
+    edgelabels = hcat(edgelabels, zeros(max_ind,headpads))
 
     deleteat!(new_state, 1:max_ind)
-    return  ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels) , new_state)
+    return  ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) , new_state)
 end
 
 

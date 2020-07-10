@@ -2,11 +2,13 @@ include("s2s.jl")
 include("pointer_generator.jl")
 include("deep_biaffine_graph_decoder.jl")
 include("debug.jl")
+include("metrics.jl")
 
 struct BaseModel
     s::S2S             
     p::PointerGenerator
     g::DeepBiaffineGraphDecoder
+    metrics::AMRMetrics
 end
 
 
@@ -27,22 +29,14 @@ function BaseModel(H, Ex, Ey, L, vocabsize, edgenode_hidden_size, edgelabel_hidd
     s = S2S(H,Ex,Ey; layers=L, bidirectional=bidirectional, dropout=Pdrop)
     p = PointerGenerator(H, vocabsize)
     g = DeepBiaffineGraphDecoder(H, edgenode_hidden_size, edgelabel_hidden_size, num_labels)
-    BaseModel(s, p, g)
+    metrics = AMRMetrics()
+
+    BaseModel(s, p, g, metrics)
 end
 
 
-function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels ; force_copy=true)
-    
-    # Metrics Initialization, TODO: move metrics part into a function
-    n_words = 0
-    n_correct = 0
-    n_source_copies = 0
-    n_correct_source_copies = 0
-    n_correct_source_points = 0
-    n_target_copies = 0
-    n_correct_target_copies = 0
-    n_correct_target_points = 0
 
+function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels,encodervocab_pad_idx, decodervocab_pad_idx ; force_copy=true)
 
     B, Tx = size(srctokens); Ty = size(tgttokens,2); Hx=Hy = H; Dx =2
     @size srcattentionmaps (Tx,Tx+2,B); @size tgtattentionmaps (Ty,Ty+1,B); 
@@ -87,7 +81,7 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
 
         # Ptgt: 
         #TODO: do tgtattentions
-        tgtattentions = _atype(zeros(Ty, B,1))
+        tgtattentions = convert(_atype,(zeros(Ty, B,1)))
         tgtattentions = reshape(tgtattentions, (Ty,B,1))            ; @size tgtattentions (Ty,B,1);
         scaled_tgtattentions = tgtattentions .* p_copytgt           ; @size scaled_tgtattentions (Ty,B,1);  ; @size tgtattentionmaps (Ty,Ty+1,B);
         scaled_copytgt_probs = bmm(permutedims(scaled_tgtattentions, [3,1,2]), _atype(tgtattentionmaps))    ; @size scaled_copytgt_probs (1,Ty+1,B);    # Ty is the dynamic tgtvocabsize
@@ -102,7 +96,7 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         probs = probs .* convert(_atype,NAvec)
         getind(cartindx) = return cartindx[2]                                                            
         predictions = getind.(argmax(softmax(value(probs),dims=2), dims=2))  ;@size predictions (1, 1, B)
-        predictions = _atype(reshape(predictions, (1,B)))
+        predictions = convert(_atype, reshape(predictions, (1,B)))
 
 
         ### PointerGenerator Loss
@@ -111,10 +105,12 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         _tgtcopytargets   = tgtcopytargets[t:t,:]                    ; @size _tgtcopytargets  (1, B)
 
         # Masks
-        non_pad_mask  = _atype(_generatetargets .!= 2)                                  ;@size non_pad_mask (1,B) #vocab_pad_idx=2                                               
-        srccopy_mask  = _atype((_srccopytargets .!= 1) .* (_srccopytargets .!= 0))      ;@size srccopy_mask (1,B) # 1 is UNK id, 0 is pad id
+        pad_idx = 0#trn.tgtvocab.token_to_idx["@@PADDING@@"]
+        unk_idx = 1#trn.tgtvocab.token_to_idx["@@UNKNOWN@@"]
+        non_pad_mask  = convert(_atype, _generatetargets .!= pad_idx)                                        ;@size non_pad_mask (1,B)                                               
+        srccopy_mask  = convert(_atype, (_srccopytargets .!= unk_idx) .* (_srccopytargets .!= pad_idx))      ;@size srccopy_mask (1,B) # 1 is UNK id, 0 is pad id
         non_srccopy_mask = 1 .- srccopy_mask
-        tgtcopy_mask = _atype(_tgtcopytargets .!= 0)                                    ;@size tgtcopy_mask (1,B) # 0 is the index for coref NA
+        tgtcopy_mask = convert(_atype, (_tgtcopytargets .!= 0))                                              ;@size tgtcopy_mask (1,B) # 0 is the index for coref NA
         non_tgtcopy_mask = 1 .- tgtcopy_mask
         
 
@@ -127,14 +123,15 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
             return hcat(reshape(results, (1,length(results)))...)
         end
 
+        src_dynamic_vocabsize = Tx+2
 
-        tgtcopytargets_withoffset = _tgtcopytargets .+ (vocabsize+Tx+3)                         ;@size tgtcopytargets_withoffset (1,B) ## todo +2 or +3? 
+        tgtcopytargets_withoffset = _tgtcopytargets .+ (vocabsize+src_dynamic_vocabsize+1)                         ;@size tgtcopytargets_withoffset (1,B) ## 
         tgtcopy_targetprobs = getprobs(tgtcopytargets_withoffset, probs)                        ;@size tgtcopy_targetprobs (1,B)
         tgtcopy_targetprobs = tgtcopy_targetprobs .* tgtcopy_mask                               ;@size tgtcopy_targetprobs (1,B)
 
         srccopytargets_withoffset = _srccopytargets .+ (vocabsize +1)                           ;@size srccopytargets_withoffset (1,B) 
         srccopy_targetprobs = getprobs(srccopytargets_withoffset, probs)                        ;@size srccopy_targetprobs (1,B)
-        srccopy_targetprobs = srccopy_targetprobs .* srccopy_mask .* non_tgtcopy_mask           ;@size srccopy_targetprobs (1,B)    #2 masks for src  1 for tgt, priority?
+        srccopy_targetprobs = srccopy_targetprobs .* srccopy_mask .* non_tgtcopy_mask           ;@size srccopy_targetprobs (1,B)    
 
         generate_targetprobs = getprobs(_generatetargets, probs)                                ;@size generate_targetprobs (1,B)
         generate_targetprobs = generate_targetprobs .* non_srccopy_mask .* non_tgtcopy_mask     ;@size generate_targetprobs (1,B) 
@@ -144,10 +141,10 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         num_tokens = sum(non_pad_mask .== 1)
 
         if !(force_copy)
-            non_generate_oov_mask = (_generatetargets .!= 1) # 1 is for unk 
+            non_generate_oov_mask = (_generatetargets .!= unk_idx)  
             additional_generate_mask = non_tgtcopy_mask .* srccopy_mask .* non_generate_oov_mask #?
             likelihood = likelihood + generate_targetprobs .* additional_generate_mask
-            num_tokens += sum(additional_generate_mask .== 1)
+            num_tokens += sum(additional_generate_mask .== unk_idx)
         end
 
         # Add eps for numerical stability.
@@ -165,7 +162,6 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
 
         targets = targets .* non_pad_mask                       ;@size targets (1,B)
         pred_eq = (predictions .== targets) .* non_pad_mask     ;@size targets (1,B)
-        src_dynamic_vocabsize = Tx+2
         num_non_pad = sum(non_pad_mask .== 1) #num_tokens
         num_correct_pred = sum(pred_eq .== 1)
         num_target_copy =  sum((tgtcopy_mask .*   non_pad_mask) .==1)
@@ -176,29 +172,38 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         num_correct_source_point = sum( ((predictions .>= vocabsize+1) .* (predictions .< vocabsize+src_dynamic_vocabsize+1)  .*non_tgtcopy_mask .*srccopy_mask .* non_pad_mask) .== 1)
 
         ### PointerGenerator Metrics and Statistics
-        n_words += num_non_pad
-        n_correct += num_correct_pred
-        n_source_copies += num_source_copy
-        n_correct_source_copies += num_correct_source_copy
-        n_correct_source_points += num_correct_source_point
-        n_target_copies += num_target_copy
-        n_correct_target_copies += num_correct_target_copy
-        n_correct_target_points += num_correct_target_point
+        m.metrics.n_words += num_non_pad
+        m.metrics.n_correct += num_correct_pred
+        m.metrics.n_source_copies += num_source_copy
+        m.metrics.n_correct_source_copies += num_correct_source_copy
+        m.metrics.n_correct_source_points += num_correct_source_point
+        m.metrics.n_target_copies += num_target_copy
+        m.metrics.n_correct_target_copies += num_correct_target_copy
+        m.metrics.n_correct_target_points += num_correct_target_point
     end
-
-    accuracy = 100 * n_correct / n_words
-    xent = sumloss / n_words
-    ppl = exp(min(sumloss / n_words, 100))
-    srccopy_accuracy = tgtcopy_accuracy = 0
-    if n_source_copies == 0; srccopy_accuracy = -1;
-    else srccopy_accuracy = 100 * (n_correct_source_copies / n_source_copies); end
-    if n_target_copies == 0; tgtcopy_accuracy = -1; 
-    else tgtcopy_accuracy = 100 * (n_correct_target_copies / n_target_copies); end
-
-    @info "PointerGenerator batch metrics" loss=sumloss all_acc=accuracy src_acc=srccopy_accuracy tgt_acc=tgtcopy_accuracy
-
+  
     hiddens = cat(hiddens...,dims=3) ;@size hiddens (Hy,B,Ty-1)
     graphloss = m.g(hiddens, parsermask, edgeheads, edgelabels)
     sumloss += graphloss
     return sumloss
+end
+
+
+function resetmetrics(m::BaseModel)
+    m.metrics.n_words = 0
+    m.metrics.n_correct = 0
+    m.metrics.n_source_copies = 0
+    m.metrics.n_correct_source_copies = 0
+    m.metrics.n_correct_source_points = 0
+    m.metrics.n_target_copies = 0
+    m.metrics.n_correct_target_copies = 0
+    m.metrics.n_correct_target_points = 0
+
+    m.g.metrics.unlabeled_correct = 0        
+    m.g.metrics.labeled_correct = 0
+    m.g.metrics.total_sentences = 0
+    m.g.metrics.total_words =  0
+    m.g.metrics.total_loss = 0
+    m.g.metrics.total_edgenode_loss = 0
+    m.g.metrics.total_edgelabel_loss = 0
 end

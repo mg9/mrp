@@ -46,8 +46,8 @@ end
 
 function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=false, dropout=0)
     @assert !bidirectional || iseven(layers) "layers should be even for bidirectional models"
-    srctokenembed = Embed(ENCODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
-    tgttokenembed = Embed(DECODER_TOKEN_VOCAB_SIZE, TOKEN_EMB_DIM)
+    srctokenembed = Embed(12202, TOKEN_EMB_DIM)
+    tgttokenembed = Embed(18002, TOKEN_EMB_DIM)
     encoderlayers = (bidirectional ? layers ÷ 2 : layers)
     encoder = RNN(srcembsz, hidden; dropout=dropout, numLayers=encoderlayers, bidirectional=bidirectional)
     decoderinput = tgtembsz + hidden
