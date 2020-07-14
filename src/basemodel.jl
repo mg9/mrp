@@ -46,13 +46,18 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
     sumloss, numwords = 0, 0
     cell = fill!(similar(mem[1], size(mem[1],1), size(mem[1],3), 1), 0)
     hiddens = []
+    # Coverage vector for the source vocabulary, accumulated
+    coverage = convert(_atype,zeros(Tx,1, B))
+    # List of coverages at each timestamp if needed
+    # coverage_records = [coverage]
 
     for t in 1:size(tgt2,2)
         input,output = (@view tgttokens[:,t:t]), (@view tgt2[:,t:t])
+        # TODO: Input masks are not considered in the decoding part
         cell, srcattnvector, srcattentions = decode(m.s, input, mem, cell)          ; @size cell (Hy,B,1); @size srcattnvector (Hy,B,1);  @size srcattentions (Tx,1,B);
         push!(hiddens, cell)
         srcattnvector = reshape(srcattnvector, Hy,B)                                ; @size srcattnvector (Hy,B);
-        
+
         # Pointer probability. (pgen + psrc +ptgt =1)
         p = softmax(m.p.linearpointer(srcattnvector), dims=1)                       ; @size p (3,B);  # switch between pgen-psrc-ptgt
         p_copysrc = p[1:1,:]                                                        ; @size p_copysrc (1,B);
@@ -113,6 +118,14 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         tgtcopy_mask = convert(_atype, (_tgtcopytargets .!= 0))                                              ;@size tgtcopy_mask (1,B) # 0 is the index for coref NA
         non_tgtcopy_mask = 1 .- tgtcopy_mask
         
+        # Calculate the coverage_loss # TODO: Is target mask needed here as well? Not used in original 
+        srcattentions = reshape(srcattentions, (Tx, 1, B))
+        coverage_loss = sum(min.(srcattentions, coverage) .* reshape(non_pad_mask, (1, 1, B)))
+        # Add the current alignments to the coverage vector
+        coverage = coverage + srcattentions                                         ; @size coverage (Tx, 1, B)
+        # maintain a list of coverages for each timestamp if needed
+        # push!(coverage_records, coverage)
+
 
         # returns the prob values with given indices
         function getprobs(ind, probarr)
@@ -150,8 +163,7 @@ function (m::BaseModel)(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps
         # Add eps for numerical stability.
         likelihood = likelihood .+ 1e-20 #eps
 
-        # TODO: Coverage records
-        loss = sum(-log.(likelihood) .* non_pad_mask) #+ coverage_loss     # Drop pads.
+        loss = sum(-log.(likelihood) .* non_pad_mask) + coverage_loss     # Drop pads.
         sumloss += loss
 
         # Mask out copy targets for which copy does not happen.
