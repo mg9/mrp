@@ -4,28 +4,33 @@ include("basemodel.jl")
 import Base: length, iterate
 using YAML, Knet, IterTools, Random
 using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random, CuArrays, IterTools
-using HDF5
 
 # Model configs
-BERT_EMB_DIM = 768
 TOKEN_EMB_DIM = 300 #glove
 POS_EMB_DIM = 100
-CNN_EMB_DIM = 100
-MUSTCOPY_EMB_DIM = 50
 COREF_EMB_DIM = 50
+ENCODER_VOCAB_SIZE = 12202
+DECODER_VOCAB_SIZE = 18002
 POSTAG_VOCAB_SIZE = 52
-ENCODER_CHAR_VOCAB_SIZE = 125
-MUSTCOPY_VOCAB_SIZE = 3
-DECODER_CHAR_VOCAB_SIZE = 87
 DECODER_COREF_VOCAB_SIZE = 500
-Ex = TOKEN_EMB_DIM 
-Ey = TOKEN_EMB_DIM
+Ex = TOKEN_EMB_DIM  + POS_EMB_DIM
+Ey = TOKEN_EMB_DIM + POS_EMB_DIM + COREF_EMB_DIM
 H, L, Pdrop = 512, 2, 0.33
-vocabsize = 12202
 edgenode_hiddensize = 256
 edgelabel_hiddensize = 128
 num_edgelabels = 141
 epochs = 50
+
+
+## Not used yet
+BERT_EMB_DIM = 768
+CNN_EMB_DIM = 100
+MUSTCOPY_EMB_DIM = 50
+MUSTCOPY_VOCAB_SIZE = 3
+ENCODER_CHAR_VOCAB_SIZE = 125
+DECODER_CHAR_VOCAB_SIZE = 87
+
+
 
 
 train_path = "../data/AMR/amr_2.0/train.txt.features.preproc"
@@ -38,81 +43,79 @@ devamrs = read_preprocessed_files(dev_path)    # 1368 instances
 
 _trnamrs=  sort(collect(trnamrs),by=x->length(x.graph.variables()), rev=false)
 trn  = AMRDataset(_trnamrs[1:5000], 8) 
-dev  = AMRDataset(devamrs, 8)
+dev  = AMRDataset(devamrs[1:500], 8)
 #test = AMRDataset(testamrs, 16)
+(ctrn, cdev) = collect(trn), collect(dev) 
+println("Trn created with path $train_path", " with ", trn.ninstances, " instances")
+println("Dev created with path $dev_path", " with ", dev.ninstances, " instances")
 
 
-function trainmodel(epochs)
-    model = BaseModel(H,Ex,Ey,L,vocabsize, edgenode_hiddensize, edgelabel_hiddensize, num_edgelabels; bidirectional=true, dropout=Pdrop)
-    (ctrn, cdev) = collect(trn), collect(dev) # use dev for now, since preparing train instances takes longer time
-    println("Trn created with path $train_path", " with ", trn.ninstances, " instances")
-    println("Dev created with path $dev_path", " with ", dev.ninstances, " instances")
-
-    epoch = adam(model, 
-           ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
-            for (srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) 
-            in ctrn))
-   
-    progress!(adam(model, ctrn), seconds=60) do y
-        
-        ## Trn
-        trnloss = 0.0
-        resetmetrics(model)
-
-        for (srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels,encodervocab_pad_idx, decodervocab_pad_idx) in ctrn
-            batchloss = model(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
-            trnloss +=batchloss
+function train(m, epochs)
+    for i in 1:10
+        println("epoch $i......")
+        ##Trn
+        trnloss =  0.0 
+        trnpgenloss = 0.0
+        trngraphloss = 0.0
+        for (srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) in ctrn
+            J = @diff m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)[1]
+            pgenloss = m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)[2]
+            graphloss = m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)[3]
+            for par in params(m)
+                g = grad(J, par)
+                if g===nothing; 
+                    #println("par: $par, g: $g")
+                    #continue
+                else 
+                    update!(value(par), g, par.opt); 
+                end
+            end
+            trnloss += value(J)
+            trnpgenloss += value(pgenloss)
+            trngraphloss += value(graphloss)
         end
-        accuracy = 100 * model.metrics.n_correct / model.metrics.n_words
-        xent = trnloss / model.metrics.n_words
-        ppl = exp(min(trnloss / model.metrics.n_words, 100))
-        srccopy_accuracy = tgtcopy_accuracy = 0
-        if model.metrics.n_source_copies == 0; srccopy_accuracy = -1;
-        else srccopy_accuracy = 100 * (model.metrics.n_correct_source_copies / model.metrics.n_source_copies); end
-        if model.metrics.n_target_copies == 0; tgtcopy_accuracy = -1; 
-        else tgtcopy_accuracy = 100 * (model.metrics.n_correct_target_copies / model.metrics.n_target_copies); end
-        println("PointerGenerator trn metrics: loss=$trnloss all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy")
+        accuracy, xent, ppl, srccopy_accuracy, tgtcopy_accuracy, n_words = calculate_pointergenerator_metrics(m.p.metrics)
+        uas, las, el = calculate_graphdecoder_metrics(m.g.metrics)
 
-        if model.g.metrics.total_words > 0
-            unlabeled_attachment_score = float(model.g.metrics.unlabeled_correct) / float(model.g.metrics.total_words)
-            labeled_attachment_score = float(model.g.metrics.labeled_correct) / float(model.g.metrics.total_words)
-            edgeloss = float(model.g.metrics.total_loss) / float(model.g.metrics.total_words)
-            edgenode_loss = float(model.g.metrics.total_edgenode_loss) / float(model.g.metrics.total_words)
-            edgelabel_loss = float(model.g.metrics.total_edgelabel_loss) / float(model.g.metrics.total_words)
+        println("--Train Metrics--")
+        println("trnloss: $trnloss,  trnpgenloss: $trnpgenloss, trngraphloss: $trngraphloss")
+        println("PointerGeneratormetrics, all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy, n_words: ", n_words)
+        println("GraphDecoder metrics, UAS=$uas LAS=$las EL=$el")
+        reset(m.p.metrics)
+        reset(m.g.metrics)
+
+        #= 
+        ##Dev
+        devloss =  0.0 
+        devgraphloss = 0.0
+        devpgenloss = 0.0
+        for (srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) in cdev
+            batchloss, graphloss, pgeneratorloss = m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
+            devloss += batchloss
+            devgraphloss += graphloss
+            devpgenloss  += pgeneratorloss
         end
-        println("GraphDecoder trn metrics: EL=$edgeloss UAS=$unlabeled_attachment_score LAS=$labeled_attachment_score")
+        accuracy, xent, ppl, srccopy_accuracy, tgtcopy_accuracy, n_words = calculate_pointergenerator_metrics(m.p.metrics)
+        uas, las, el = calculate_graphdecoder_metrics(m.g.metrics)
 
-
-        ## Dev
-        devloss = 0.0
-        resetmetrics(model)
-
-        for (srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) in cdev
-            batchloss = model(srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
-            devloss +=batchloss
-        end
-        accuracy = 100 * model.metrics.n_correct / model.metrics.n_words
-        xent = trnloss / model.metrics.n_words
-        ppl = exp(min(trnloss / model.metrics.n_words, 100))
-        srccopy_accuracy = tgtcopy_accuracy = 0
-        if model.metrics.n_source_copies == 0; srccopy_accuracy = -1;
-        else srccopy_accuracy = 100 * (model.metrics.n_correct_source_copies / model.metrics.n_source_copies); end
-        if model.metrics.n_target_copies == 0; tgtcopy_accuracy = -1; 
-        else tgtcopy_accuracy = 100 * (model.metrics.n_correct_target_copies / model.metrics.n_target_copies); end
-        println("PointerGenerator dev metrics: loss=$devloss all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy")
-
-        if model.g.metrics.total_words > 0
-            unlabeled_attachment_score = float(model.g.metrics.unlabeled_correct) / float(model.g.metrics.total_words)
-            labeled_attachment_score = float(model.g.metrics.labeled_correct) / float(model.g.metrics.total_words)
-            edgeloss = float(model.g.metrics.total_loss) / float(model.g.metrics.total_words)
-            edgenode_loss = float(model.g.metrics.total_edgenode_loss) / float(model.g.metrics.total_words)
-            edgelabel_loss = float(model.g.metrics.total_edgelabel_loss) / float(model.g.metrics.total_words)
-        end
-        println("GraphDecoder dev metrics: EL=$edgeloss UAS=$unlabeled_attachment_score LAS=$labeled_attachment_score")
-
+        println("--Dev Metrics--")
+        println("devloss: $devloss, devpgenloss: $devpgenloss, devgraphloss: $devgraphloss")
+        println("PointerGeneratormetrics, all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy, n_words: ", n_words)
+        println("GraphDecoder metrics, UAS=$uas LAS=$las EL=$el")
+        reset(m.p.metrics)
+        reset(m.g.metrics)
+        =#
     end
 end
-trainmodel(epochs)
 
+function initopt!(model::BaseModel, optimizer="Adam()")
+    for par in params(model); 
+        par.opt = eval(Meta.parse(optimizer)); 
+        println("inited par: $par")
+    end
+end
 
+m = BaseModel(H,Ex,Ey,L, DECODER_VOCAB_SIZE, edgenode_hiddensize, edgelabel_hiddensize, num_edgelabels; bidirectional=true, dropout=Pdrop)
+initopt!(m)
+train(m, epochs) 
 

@@ -164,6 +164,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     src_pos_tags = []
     src_copy_indices = []
     src_copy_map = []
+    corefs= []
 
     for (i,amr) in enumerate(amrs_raw)
         instance = make_instance(d, amr)
@@ -186,88 +187,110 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     end
 
     function pad(x, maxlength)
-        append!(x, zeros(maxlength-length(x)))
+        append!(x, ones(maxlength-length(x)))
      end
+
+    function padzero(x, maxlength)
+        append!(x, zeros(maxlength-length(x)))
+    end
 
     function pad2d(x, maxlength)
         x = hcat(x, zeros(size(x,1),maxlength-size(x,1)))
         x = vcat(x, zeros(maxlength-size(x,1),size(x,2)))
      end
 
-    maxheadtags= maximum(length.(head_tags))
-    pad.(head_tags,maxheadtags)
-    head_tags = hcat(head_tags...)
 
     maxencodertokens= maximum(length.(encoder_tokens))
     pad.(encoder_tokens,maxencodertokens)
     encoder_tokens = hcat(encoder_tokens...)
+    encoder_tokens = Integer.(encoder_tokens)
 
-    maxtgtcopymap= Integer(sqrt(maximum(length.(tgt_copy_map))))
-    tgt_copy_map = pad2d.(tgt_copy_map, maxtgtcopymap)
-    tgt_copy_map = cat(tgt_copy_map..., dims=3)
-
-
-    maxdecodercharacters= maximum(length.(decoder_characters))
-    pad.(decoder_characters,maxdecodercharacters)
-    decoder_characters = hcat(decoder_characters...)
-
-    maxtgtpostags = maximum(length.(tgt_pos_tags))
-    pad.(tgt_pos_tags, maxtgtpostags)
-    tgt_pos_tags = hcat(tgt_pos_tags...)
-
-    maxencodercharacters= maximum(length.(encoder_characters))
-    pad.(encoder_characters,maxencodercharacters)
-    encoder_characters = hcat(encoder_characters...)
-
-    maxtgtcopyindices= maximum(length.(tgt_copy_indices))
-    pad.(tgt_copy_indices,maxtgtcopyindices)
-    tgt_copy_indices = hcat(tgt_copy_indices...)
 
     maxdecodertokens= maximum(length.(decoder_tokens))
     pad.(decoder_tokens,maxdecodertokens)
     decoder_tokens = hcat(decoder_tokens...)
-
-    
-    maxheadindices = maximum(length.(head_indices))
-    pad.(head_indices, maxheadindices)
-    head_indices = hcat(head_indices...)
+    decoder_tokens = Integer.(decoder_tokens)
 
 
     maxsrcpostags = maximum(length.(src_pos_tags))
     pad.(src_pos_tags, maxsrcpostags)
-    src_pos_tags = hcat(src_pos_tags...)
+    src_pos_tags = hcat(src_pos_tags...)'
+    src_pos_tags = Integer.(src_pos_tags)
+
+
+    maxtgtpostags = maximum(length.(tgt_pos_tags))
+    pad.(tgt_pos_tags, maxtgtpostags)
+    tgt_pos_tags = hcat(tgt_pos_tags...)'
+    tgt_pos_tags = Integer.(tgt_pos_tags)
 
 
     maxsrccopyindices = maximum(length.(src_copy_indices))
     pad.(src_copy_indices, maxsrccopyindices)
     src_copy_indices = hcat(src_copy_indices...)
+    src_copy_indices = Integer.(src_copy_indices)
+
+
+    maxtgtcopyindices= maximum(length.(tgt_copy_indices))
+    for ar in tgt_copy_indices
+       coref_mask = ar.== 0;
+       coref_inputs=collect(1:length(ar))
+       y = coref_mask .* coref_inputs
+       push!(corefs,  (ar .+ y))
+    end
+    padzero.(corefs, maxtgtcopyindices)
+    corefs = hcat(corefs...)'
+    corefs = Integer.(corefs)
+    corefs = corefs .+1
+
+
+    pad.(tgt_copy_indices,maxtgtcopyindices)
+    tgt_copy_indices = hcat(tgt_copy_indices...)
+    tgt_copy_indices = Integer.(tgt_copy_indices)
+
 
     maxsrccopymap= Integer(sqrt(maximum(length.(src_copy_map))))
     src_copy_map = pad2d.(src_copy_map, maxsrccopymap)
     src_copy_map = cat(src_copy_map..., dims=3)
+    src_copy_map = Integer.(src_copy_map)
+
+
+    maxtgtcopymap= Integer(sqrt(maximum(length.(tgt_copy_map))))
+    tgt_copy_map = pad2d.(tgt_copy_map, maxtgtcopymap)
+    tgt_copy_map = cat(tgt_copy_map..., dims=3)
+    tgt_copy_map = Integer.(tgt_copy_map)
+
+
+    maxheadtags= maximum(length.(head_tags))
+    pad.(head_tags,maxheadtags)
+    head_tags = hcat(head_tags...)
+    head_tags = Integer.(head_tags)
+
+    
+    maxheadindices = maximum(length.(head_indices))
+    pad.(head_indices, maxheadindices)
+    head_indices = hcat(head_indices...)
+    head_indices = Integer.(head_indices)
+
+
 
     #tgt_copy_mask = vcat(tgt_copy_mask...)
     #src_token_ids = vcat(src_token_ids...)
     #src_token_subword_index = vcat(src_token_subword_index...)
     #encoder_characters = vcat(encoder_characters...)
     #src_must_copy_tags = vcat(src_must_copy_tags...)
-
-   
-    encoder_tokens = Integer.(encoder_tokens)
-    decoder_tokens = Integer.(decoder_tokens)
-    src_copy_map = Integer.(src_copy_map)
-    tgt_copy_map = Integer.(tgt_copy_map)
-    src_copy_indices = Integer.(src_copy_indices)
-    tgt_copy_indices = Integer.(tgt_copy_indices)
-    head_indices = Integer.(head_indices)
-    head_tags = Integer.(head_tags)
+    maxencodercharacters= maximum(length.(encoder_characters))
+    pad.(encoder_characters,maxencodercharacters)
+    encoder_characters = hcat(encoder_characters...)
 
 
-    encodervocab_pad_idx = d.srcvocab.vocabsize 
-    decodervocab_pad_idx = d.tgtvocab.vocabsize 
+    maxdecodercharacters= maximum(length.(decoder_characters))
+    pad.(decoder_characters,maxdecodercharacters)
+    decoder_characters = hcat(decoder_characters...)
 
-    encoder_tokens[encoder_tokens.==0] .= encodervocab_pad_idx                          # replace pad idx 0 with the latest index of array
-    decoder_tokens[decoder_tokens.==0] .= decodervocab_pad_idx                          # replace pad idx 0 with the latest index of array
+
+    encodervocab_pad_idx = 1#d.srcvocab.vocabsize 
+    decodervocab_pad_idx = 1#d.tgtvocab.vocabsize 
+
 
 
     srctokens = encoder_tokens'                                                         # -> (B,Tx)
@@ -292,7 +315,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     edgelabels = hcat(edgelabels, zeros(max_ind,headpads))
 
     deleteat!(new_state, 1:max_ind)
-    return  ((srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) , new_state)
+    return  ((src_pos_tags, tgt_pos_tags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) , new_state)
 end
 
 

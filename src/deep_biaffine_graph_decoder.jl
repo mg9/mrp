@@ -15,7 +15,8 @@ struct DeepBiaffineGraphDecoder
     edgelabel_m_linear::Linear            # decoderhiddens(Hy, B, Ty) ->  (edgelabelhiddensize, B, Ty)
     biaffine_attention::BiaffineAttention # edgenode_h_linear, edgenode_m_linear, masks -> edgenode_scores
     edgelabel_bilinear::BiLinear          # edgelabel_h_linear, edgelabel_m_linear, masks -> edgelabel_scores
-    metrics::AMRMetrics
+    head_sentinel
+    metrics::GraphMetrics
 end
 
 
@@ -34,29 +35,20 @@ function DeepBiaffineGraphDecoder(inputsize::Int, edgenodehiddensize::Int, edgel
     # TODO: dropout. encode_dropout = torch.nn.Dropout2d(p=dropout)
     biaffine_attention = BiaffineAttention(edgenodehiddensize, edgenodehiddensize)
     edgelabel_bilinear = BiLinear(edgelabelhiddensize, edgelabelhiddensize, num_labels)
-    metrics = AMRMetrics()
-    DeepBiaffineGraphDecoder(edgenode_h_linear, edgenode_m_linear, edgelabel_h_linear, edgelabel_m_linear, biaffine_attention, edgelabel_bilinear,metrics)
+    head_sentinel  = param(inputsize,1,1)
+    metrics = GraphMetrics(0,0,0,0,0,0,0,0,0)
+    DeepBiaffineGraphDecoder(edgenode_h_linear, edgenode_m_linear, edgelabel_h_linear, edgelabel_m_linear, biaffine_attention, edgelabel_bilinear, head_sentinel, metrics)
 end
 
-#=
-#-
-@testset "Testing DeepBiaffineGraphDecoder constructor" begin
-    Hy, edgenode_hidden_size, edgelabel_hidden_size, num_labels= 512,256,128,141
-    g = DeepBiaffineGraphDecoder(Hy, edgenode_hidden_size, edgelabel_hidden_size, num_labels)
-    @test size(g.edgenode_h_linear.w) == (edgenode_hidden_size, Hy)
-    @test size(g.edgelabel_h_linear.w) == (edgelabel_hidden_size, Hy)
-    hinput = convert(_atype,randn(Hy, 64, 2))
-    hinput = reshape(hinput, (Hy,:)) 
-    @test size(g.edgenode_h_linear(hinput),1) == (edgenode_hidden_size)
-end
-=#
 
 function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabels)
     Hy,B,Ty = size(hiddens,1), size(hiddens,2), size(hiddens,3)+1
 
-    
     ;@size parsermask (B, Ty-1); @size edgeheads (B, Ty-1);  @size edgelabels (B, Ty-1)
-    head_sentinel = param(Hy, B, 1)  
+
+    dummy = convert(_atype, zeros(Hy,B,1))
+    head_sentinel = g.head_sentinel .+ dummy   ;@size head_sentinel (Hy,B,1)
+
     hiddens = cat(head_sentinel, hiddens, dims=3)                                           ;@size hiddens (Hy,B,Ty)
     if !isnothing(edgeheads); edgeheads = cat(zeros(B,1), edgeheads, dims=2); end           ;@size edgeheads  (B,Ty)
     if !isnothing(edgelabels); edgelabels = cat(zeros(B,1), edgelabels, dims=2); end        ;@size edgelabels (B,Ty)
@@ -72,9 +64,16 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
 
     ## Calculate edgeheads scores & loglikelihood
     edgenode_scores = g.biaffine_attention(edgenode_h, edgenode_m, parsermask) ;@size edgenode_scores (Ty,Ty,B)
-    tmpsoftmax_mask = (parsermask .== 0)'                       ;@size tmpsoftmax_mask (Ty,B)
-    tmpsoftmax_mask = _atype(reshape(tmpsoftmax_mask,1,Ty,B))   ;@size tmpsoftmax_mask (1, Ty,B)
-    masked_scores = (edgenode_scores .* tmpsoftmax_mask)        ;@size masked_scores (Ty, Ty,B) 
+
+    #TODO: Check that masked_softmax try again. For now it doesn't use masks during softmax calc.
+    tmpsoftmax_mask = (parsermask .== 1)'                       ;@size tmpsoftmax_mask (Ty,B)
+    tmpsoftmax_mask = tmpsoftmax_mask .+ 1e-45
+    tmpsoftmax_mask_row = _atype(reshape(tmpsoftmax_mask,1,Ty,B))   ;@size tmpsoftmax_mask_row (1, Ty,B)
+    tmpsoftmax_mask_col = _atype(reshape(tmpsoftmax_mask,Ty,1,B))   ;@size tmpsoftmax_mask_col (Ty, 1,B)
+    masked_scores = (edgenode_scores .* tmpsoftmax_mask_row)        ;@size masked_scores (Ty, Ty,B) 
+    masked_scores = (masked_scores .* tmpsoftmax_mask_col)        ;@size masked_scores (Ty, Ty,B) 
+
+
     edgenode_ll =  -log.(softmax(masked_scores, dims=2))        # TODO: scores for 0-masks is still ~0.11
 
     ## Calculate edgelabels scores & loglikelihood
@@ -108,11 +107,21 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     edgeheadloss = edgelabelloss = 0.0
     for t in 2:Ty # Exclude dummy root
         for b in 1:B
-            edgeheadloss +=edgenode_ll[t,_edgeheads[t,b],b]
-            edgelabelloss+=edgelabel_ll[t,_edgelabels[t,b],b]
+            xh = edgenode_ll[t,_edgeheads[t,b],b]
+            if isnan(xh) 
+                println("xh NAN at $t $b ", _edgeheads[t,b]) 
+            end
+            edgeheadloss +=xh
+
+            xl = edgelabel_ll[t,_edgelabels[t,b],b]
+            if isnan(xl) println("xh: $xl") end
+            edgelabelloss+=xl
         end
     end
+   
+    ## Loss Calculation
     graphloss = sum(edgeheadloss + edgelabelloss)
+
 
 
     ## Greedy decoding for heads and labels
@@ -122,7 +131,7 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     a = reshape(a, (Ty,Ty,1))
     _edgenode_scores = edgenode_scores .+ convert(_atype,a)             ;@size _edgenode_scores (Ty,Ty,B)                       
     minus_mask = 1 .- parsermask
-    settoinf(x) = x==0.0 ? x= -Inf : x=x                                               
+    settoinf(x) = x==1.0 ? x= -Inf : x=x                                               
     minus_mask = settoinf.(minus_mask)'                                 ;@size minus_mask (Ty,B)
     minus_mask = reshape(minus_mask, (1,Ty,B))                                         
     _edgenode_scores = _edgenode_scores .+ _atype(minus_mask)           ;@size _edgenode_scores (Ty,Ty,B)               
@@ -139,29 +148,19 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     pred_edgelabels = argmax(value(edgelabel_scores), dims=3)           ;@size pred_edgelabels (B,Ty,1)
     pred_edgelabels = reshape(inpa.(pred_edgelabels), (B,Ty))           ;@size pred_edgelabels (B,Ty)
 
-
     ## Graph Decoder Metrics
-    #TODO: other metrics s.t. unlabeled exact match, labeled exact match etc., move metrics part into a function
     ;@size _edgeheads (Ty,B) ;@size _edgelabels (Ty,B) ;@size parsermask (B,Ty) ;@size pred_edgeheads (B,Ty) ;@size pred_edgelabels (B,Ty)
+    # Exclude dummy root 
     _edgeheads = _edgeheads'[:,2:end]               ;@size _edgeheads (B,Ty-1)
     _edgelabels = _edgelabels'[:,2:end]             ;@size _edgelabels (B,Ty-1)
     _parsermask = parsermask[:,2:end]               ;@size _parsermask (B,Ty-1)
     _pred_edgeheads = pred_edgeheads[:,2:end]       ;@size _pred_edgeheads (B,Ty-1)
     _pred_edgelabels = pred_edgelabels[:,2:end]     ;@size _pred_edgelabels (B,Ty-1)
+    g.metrics(_pred_edgeheads,_pred_edgelabels, _edgeheads, _edgelabels, _parsermask, graphloss, edgeheadloss, edgelabelloss)
 
-    #TODO: What about ignore label class mask?
-    correct_indices = (_pred_edgeheads .== _edgeheads)  .*  (1 .-_parsermask)   ;@size correct_indices (B,Ty-1)
-    correct_labels = (_pred_edgelabels .== _edgelabels) .* (1 .-_parsermask)    ;@size correct_labels (B,Ty-1)
-    correct_labels_and_indices = correct_indices .* correct_labels              ;@size correct_labels_and_indices (B,Ty-1)
-    g.metrics.unlabeled_correct = sum(correct_indices)               
-    g.metrics.labeled_correct = sum(correct_labels_and_indices)
-    g.metrics.total_sentences = B
-    g.metrics.total_words =  sum(1 .- parsermask)
-    g.metrics.total_loss = graphloss
-    g.metrics.total_edgenode_loss = edgeheadloss
-    g.metrics.total_edgelabel_loss = edgelabelloss
     return graphloss
 end
+
 
 # TODO: test this function
 function mst_decode(g, edge_label_h, edge_label_m, edge_node_scores, corefs, mask)

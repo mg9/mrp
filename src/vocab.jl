@@ -13,11 +13,11 @@ end
 
 function Vocab(srctokens)
     token_to_idx = Dict()
-    token_to_idx[DEFAULT_PADDING_TOKEN] = 0
-    token_to_idx[DEFAULT_OOV_TOKEN] = 1
+    token_to_idx[DEFAULT_PADDING_TOKEN] = 1
+    token_to_idx[DEFAULT_OOV_TOKEN] = 2
     idx_to_token = Dict()
-    idx_to_token[0] = DEFAULT_PADDING_TOKEN
-    idx_to_token[1] = DEFAULT_OOV_TOKEN
+    idx_to_token[1] = DEFAULT_PADDING_TOKEN
+    idx_to_token[2] = DEFAULT_OOV_TOKEN
     vocabsize = 2
     if isa(srctokens, Array)
         for token in srctokens
