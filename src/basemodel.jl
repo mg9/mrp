@@ -31,7 +31,6 @@ function BaseModel(H, Ex, Ey, L, vocabsize, edgenode_hidden_size, edgelabel_hidd
 end
 
 
-
 function (m::BaseModel)(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels,encodervocab_pad_idx, decodervocab_pad_idx ; force_copy=true)
 
     B, Tx = size(srctokens); Ty = size(tgttokens,2); Hx=Hy = H; Dx =2
@@ -42,12 +41,11 @@ function (m::BaseModel)(srcpostags, tgtpostags, corefs, srctokens, tgttokens, sr
     sumloss, pgeneratorloss, graphloss  = 0, 0, 0
     cell = fill!(similar(srcmem[1], size(srcmem[1],1), size(srcmem[1],3), 1), 0)
     hiddens = []
-    
+
     # Coverage vector for the source vocabulary, accumulated
     coverage = convert(_atype,zeros(Tx,1, B))
     # List of coverages at each timestamp if needed
     # coverage_records = [coverage]
-
     tgtkeys=tgtvals =nothing
     for t in 1:size(tgt2,2)
         input,output = (@view tgttokens[:,t:t]), (@view tgt2[:,t:t])
@@ -66,10 +64,10 @@ function (m::BaseModel)(srcpostags, tgtpostags, corefs, srctokens, tgttokens, sr
         @size tgtattentions (Ty,1,B);
         pgeneratorloss += m.p(srcattnvector, srcattentions, tgtattentions, srcattentionmaps, tgtattentionmaps,  generatetargets[t:t,:], srccopytargets[t:t,:] , tgtcopytargets[t:t,:], decodervocab_pad_idx, coverage)[1]
         sumloss += pgeneratorloss
+
     end
     hiddens = cat(hiddens...,dims=3) ;@size hiddens (Hy,B,Ty-1)
     sumloss += graphloss
-    
     graphloss = m.g(hiddens, parsermask, edgeheads, edgelabels)
     return  sumloss, pgeneratorloss , graphloss
 end
