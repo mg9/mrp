@@ -42,16 +42,19 @@ devamrs = read_preprocessed_files(dev_path)    # 1368 instances
 #testamrs = read_preprocessed_files(test_path) # 1371 instances
 
 _trnamrs=  sort(collect(trnamrs),by=x->length(x.graph.variables()), rev=false)
-trn  = AMRDataset(_trnamrs[1:5000], 8) 
-dev  = AMRDataset(devamrs[1:500], 8)
-#test = AMRDataset(testamrs, 16)
-(ctrn, cdev) = collect(trn), collect(dev) 
+trn  = AMRDataset(_trnamrs[1:15000], 32) 
+dev  = AMRDataset(devamrs, 32)
+#test = AMRDataset(testamrs, 32)
+ctrn = @time collect(trn)
+cdev = @time collect(dev) 
+
 println("Trn created with path $train_path", " with ", trn.ninstances, " instances")
 println("Dev created with path $dev_path", " with ", dev.ninstances, " instances")
 
 
 function train(m, epochs)
     for i in 1:10
+        trnstart=time()
         println("epoch $i......")
         ##Trn
         trnloss =  0.0 
@@ -74,17 +77,22 @@ function train(m, epochs)
             trnpgenloss += value(pgenloss)
             trngraphloss += value(graphloss)
         end
+        trnend=time()
+        elapsed_time = trnend - trnstart
+
         accuracy, xent, ppl, srccopy_accuracy, tgtcopy_accuracy, n_words = calculate_pointergenerator_metrics(m.p.metrics)
         uas, las, el = calculate_graphdecoder_metrics(m.g.metrics)
 
         println("--Train Metrics--")
         println("trnloss: $trnloss,  trnpgenloss: $trnpgenloss, trngraphloss: $trngraphloss")
-        println("PointerGeneratormetrics, all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy, n_words: ", n_words)
+        println("PointerGeneratormetrics, all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy, ppl=$ppl, n_words: ", n_words)
         println("GraphDecoder metrics, UAS=$uas LAS=$las EL=$el")
+        println("Epoch elapsed time: $elapsed_time sec.")
+
         reset(m.p.metrics)
         reset(m.g.metrics)
 
-        #= 
+         
         ##Dev
         devloss =  0.0 
         devgraphloss = 0.0
@@ -104,7 +112,6 @@ function train(m, epochs)
         println("GraphDecoder metrics, UAS=$uas LAS=$las EL=$el")
         reset(m.p.metrics)
         reset(m.g.metrics)
-        =#
     end
 end
 

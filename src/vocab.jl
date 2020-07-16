@@ -22,9 +22,9 @@ function Vocab(srctokens)
     if isa(srctokens, Array)
         for token in srctokens
             if !haskey(token_to_idx, token)
+                vocabsize += 1
                 token_to_idx[token] = vocabsize
                 idx_to_token[vocabsize] = token
-                vocabsize += 1
             end
         end
     end
@@ -35,9 +35,9 @@ end
 function vocab_addtokens(vocab::Vocab, srctokens)
     for token in srctokens
         if !haskey(vocab.token_to_idx, token)
+            vocab.vocabsize += 1
             vocab.token_to_idx[token] = vocab.vocabsize
             vocab.idx_to_token[vocab.vocabsize] = token
-            vocab.vocabsize += 1
         end
     end
 end
@@ -58,8 +58,8 @@ end
 
 function vocab_getcopymap(vocab::Vocab, src_tokens)
     copymap = []
-    srcindices = pushfirst!(vocab_indexsequence(vocab, src_tokens), vocab.token_to_idx[DEFAULT_OOV_TOKEN])
-
+    #srcindices = pushfirst!(vocab_indexsequence(vocab, src_tokens), vocab.token_to_idx[DEFAULT_OOV_TOKEN])
+    srcindices = vocab_indexsequence(vocab, src_tokens)
     for (src_idx, src_token_idx) in enumerate(srcindices)
         push!(copymap, (src_idx, src_token_idx))
     end

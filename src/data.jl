@@ -95,16 +95,23 @@ function make_instance(d::AMRDataset, amr, evaluation=false)
     end
 
 
-    srccopymap = zeros(length(list_data["src_copy_map"]), length(list_data["src_copy_map"]))
+    i=2 
+    for (k,v) in list_data["src_copy_map"]
+       if v!=2
+           i+=1
+       end
+    end
+
+    srccopymap = zeros(length(list_data["src_copy_map"]), i) # we need matrice as: 2(unk id)+[token!=unk]  x 2(unk id)+[token!=unk] 
     for (k,v) in list_data["src_copy_map"]; srccopymap[k,v] = 1; end
-    srccopymap = hcat(zeros(size(srccopymap,1),1), srccopymap)
-    srccopymap = vcat(zeros(1,size(srccopymap,2)), srccopymap)
+    #srccopymap = hcat(zeros(size(srccopymap,1),1), srccopymap)
+    #srccopymap = vcat(zeros(1,size(srccopymap,2)), srccopymap)
 
 
     tgtcopymap = zeros(length(list_data["tgt_copy_map"]), length(list_data["tgt_copy_map"]))
     for (k,v) in list_data["tgt_copy_map"]; tgtcopymap[k,v] = 1; end
-    tgtcopymap = hcat(zeros(size(tgtcopymap,1),1), tgtcopymap)
-    tgtcopymap = vcat(zeros(1,size(tgtcopymap,2)), tgtcopymap)
+    #tgtcopymap = hcat(zeros(size(tgtcopymap,1),1), tgtcopymap)
+    #tgtcopymap = vcat(zeros(1,size(tgtcopymap,2)), tgtcopymap)
 
    
     # TODO: Look again sequenceLabelField in original code
@@ -186,48 +193,62 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
         push!(src_copy_map, instance["src_copy_map"])
     end
 
-    function pad(x, maxlength)
+    function pad_one_right(x, maxlength)
         append!(x, ones(maxlength-length(x)))
      end
 
-    function padzero(x, maxlength)
+    function pad_one_left(x, maxlength)
+        append!(ones(maxlength-length(x)), x)
+     end
+
+    function pad_zero_right(x, maxlength)
         append!(x, zeros(maxlength-length(x)))
     end
 
-    function pad2d(x, maxlength)
+    function pad_zero_left(x, maxlength)
+        append!(zeros(maxlength-length(x)), x)
+    end
+
+    function pad2d_srcmap(x, maxrow, maxcol) # with leftwise padding
+        x = hcat(x, zeros(size(x,1),maxcol-size(x,2)))
+        x = vcat(zeros(maxrow-size(x,1),size(x,2)),x)
+    end
+
+    function pad2d_tgtmap(x, maxlength) # with rightwise padding
         x = hcat(x, zeros(size(x,1),maxlength-size(x,1)))
         x = vcat(x, zeros(maxlength-size(x,1),size(x,2)))
-     end
+        x = hcat(zeros(size(x,1),1), x) # unk padding 
+    end
 
 
     maxencodertokens= maximum(length.(encoder_tokens))
-    pad.(encoder_tokens,maxencodertokens)
+    encoder_tokens = pad_one_left.(encoder_tokens,maxencodertokens)
     encoder_tokens = hcat(encoder_tokens...)
-    encoder_tokens = Integer.(encoder_tokens)
+    encoder_tokens = Integer.(encoder_tokens)' # B, Tx
 
 
     maxdecodertokens= maximum(length.(decoder_tokens))
-    pad.(decoder_tokens,maxdecodertokens)
+    decoder_tokens = pad_one_right.(decoder_tokens,maxdecodertokens)
     decoder_tokens = hcat(decoder_tokens...)
-    decoder_tokens = Integer.(decoder_tokens)
+    decoder_tokens = Integer.(decoder_tokens)' # B, Ty
 
 
     maxsrcpostags = maximum(length.(src_pos_tags))
-    pad.(src_pos_tags, maxsrcpostags)
-    src_pos_tags = hcat(src_pos_tags...)'
-    src_pos_tags = Integer.(src_pos_tags)
+    src_pos_tags = pad_one_left.(src_pos_tags, maxsrcpostags)
+    src_pos_tags = hcat(src_pos_tags...)
+    src_pos_tags = Integer.(src_pos_tags)'  # B,Tx
 
 
     maxtgtpostags = maximum(length.(tgt_pos_tags))
-    pad.(tgt_pos_tags, maxtgtpostags)
-    tgt_pos_tags = hcat(tgt_pos_tags...)'
-    tgt_pos_tags = Integer.(tgt_pos_tags)
+    tgt_pos_tags = pad_one_right.(tgt_pos_tags, maxtgtpostags)
+    tgt_pos_tags = hcat(tgt_pos_tags...)
+    tgt_pos_tags = Integer.(tgt_pos_tags)'  # B,Ty
 
 
     maxsrccopyindices = maximum(length.(src_copy_indices))
-    pad.(src_copy_indices, maxsrccopyindices)
+    src_copy_indices = pad_one_right.(src_copy_indices, maxsrccopyindices)
     src_copy_indices = hcat(src_copy_indices...)
-    src_copy_indices = Integer.(src_copy_indices)
+    src_copy_indices = Integer.(src_copy_indices)' # B, Ty
 
 
     maxtgtcopyindices= maximum(length.(tgt_copy_indices))
@@ -237,80 +258,89 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
        y = coref_mask .* coref_inputs
        push!(corefs,  (ar .+ y))
     end
-    padzero.(corefs, maxtgtcopyindices)
-    corefs = hcat(corefs...)'
-    corefs = Integer.(corefs)
-    corefs = corefs .+1
+    corefs = pad_zero_right.(corefs, maxtgtcopyindices)
+    corefs = hcat(corefs...)
+    corefs = Integer.(corefs)' # B, Ty
+    corefs = corefs .+1  # for embeddings
 
 
-    pad.(tgt_copy_indices,maxtgtcopyindices)
+    tgt_copy_indices = pad_one_right.(tgt_copy_indices,maxtgtcopyindices)
     tgt_copy_indices = hcat(tgt_copy_indices...)
-    tgt_copy_indices = Integer.(tgt_copy_indices)
+    tgt_copy_indices = Integer.(tgt_copy_indices)' # B, Ty
 
 
-    maxsrccopymap= Integer(sqrt(maximum(length.(src_copy_map))))
-    src_copy_map = pad2d.(src_copy_map, maxsrccopymap)
+    maxrow = maximum(size.(src_copy_map,1))
+    maxsrccopymap= maximum(size.(src_copy_map,2))
+    src_copy_map = pad2d_srcmap.(src_copy_map, maxrow, maxsrccopymap)
     src_copy_map = cat(src_copy_map..., dims=3)
-    src_copy_map = Integer.(src_copy_map)
+    src_copy_map = Integer.(src_copy_map) 
 
 
     maxtgtcopymap= Integer(sqrt(maximum(length.(tgt_copy_map))))
-    tgt_copy_map = pad2d.(tgt_copy_map, maxtgtcopymap)
+    tgt_copy_map = pad2d_tgtmap.(tgt_copy_map, maxtgtcopymap)
     tgt_copy_map = cat(tgt_copy_map..., dims=3)
     tgt_copy_map = Integer.(tgt_copy_map)
 
 
     maxheadtags= maximum(length.(head_tags))
-    pad.(head_tags,maxheadtags)
+    head_tags = pad_one_right.(head_tags,maxheadtags)
     head_tags = hcat(head_tags...)
-    head_tags = Integer.(head_tags)
+    head_tags = Integer.(head_tags)'  #(B,Ty-2)
 
     
-    maxheadindices = maximum(length.(head_indices))
-    pad.(head_indices, maxheadindices)
+    maxheadindices = maximum(length.(head_indices))  ## Check that part again.
+    head_indices = pad_zero_right.(head_indices, maxheadindices)
     head_indices = hcat(head_indices...)
-    head_indices = Integer.(head_indices)
+    head_indices = Integer.(head_indices)' #(B,Ty-2)
 
 
 
-    #tgt_copy_mask = vcat(tgt_copy_mask...)
+    maxtgtcopymask = maximum(length.(tgt_copy_mask))
+    tgt_copy_mask = pad_zero_right.(tgt_copy_mask, maxtgtcopymask)
+    tgt_copy_mask = hcat(tgt_copy_mask...)
+    tgt_copy_mask = Integer.(tgt_copy_mask) # Ty,B
+
+
+
+    maxsrcmustcopytags = maximum(length.(src_must_copy_tags))
+    src_must_copy_tags = pad_zero_left.(src_must_copy_tags, maxsrcmustcopytags)
+    src_must_copy_tags = hcat(src_must_copy_tags...) 
+    src_must_copy_tags = Integer.(src_must_copy_tags) # Tx,B
+
+
+
+    # Not used yet
     #src_token_ids = vcat(src_token_ids...)
     #src_token_subword_index = vcat(src_token_subword_index...)
-    #encoder_characters = vcat(encoder_characters...)
-    #src_must_copy_tags = vcat(src_must_copy_tags...)
-    maxencodercharacters= maximum(length.(encoder_characters))
-    pad.(encoder_characters,maxencodercharacters)
-    encoder_characters = hcat(encoder_characters...)
+    #maxencodercharacters= maximum(length.(encoder_characters))
+    #pad.(encoder_characters,maxencodercharacters)
+    #encoder_characters = hcat(encoder_characters...)
+    #maxdecodercharacters= maximum(length.(decoder_characters))
+    #pad.(decoder_characters,maxdecodercharacters)
+    #decoder_characters = hcat(decoder_characters...)
 
-
-    maxdecodercharacters= maximum(length.(decoder_characters))
-    pad.(decoder_characters,maxdecodercharacters)
-    decoder_characters = hcat(decoder_characters...)
-
-
-    encodervocab_pad_idx = 1#d.srcvocab.vocabsize 
-    decodervocab_pad_idx = 1#d.tgtvocab.vocabsize 
-
-
-
-    srctokens = encoder_tokens'                                                         # -> (B,Tx)
-    tgttokens = decoder_tokens'
-    srcattentionmaps =  src_copy_map[3:end,:,:]                                         # -> (Tx, Tx+2, B)
-    tgtattentionmaps = tgt_copy_map[2:end,:,:]                                          # -> (Ty,Ty+1, B)
-    generatetargets = decoder_tokens[2:end,:]  #exclude BOS                             # -> (Ty-1,B) 
-    srccopytargets = src_copy_indices[2:end,:]                                          # -> (Ty-1,B)
-    tgtcopytargets = tgt_copy_indices[2:end,:]                                          # -> (Ty-1,B)
-    
-    parsermask = copy(decoder_tokens'[:,2:end])                                       # -> (B, Ty-2)
-    #Pad END_SYMBOL and padding value also if there is any
+    encodervocab_pad_idx = d.srcvocab.token_to_idx["@@PADDING@@"]
+    decodervocab_pad_idx = d.tgtvocab.token_to_idx["@@PADDING@@"]
     end_symbol_idx= d.tgtvocab.token_to_idx["@end@"]
+
+
+    srctokens = encoder_tokens                                            # (B,Tx)
+    tgttokens = decoder_tokens                                            # (B,Ty)
+    srcattentionmaps =  src_copy_map                                      # (Tx, Tx+2, B)
+    tgtattentionmaps = tgt_copy_map                                       # (Ty,Ty+1, B)
+    generatetargets = decoder_tokens[:,2:end]'  #exclude BOS               # (Ty-1,B) 
+    srccopytargets = src_copy_indices[:, 2:end]'                            # (Ty-1,B)
+    tgtcopytargets = tgt_copy_indices[:, 2:end]'                            # (Ty-1,B)
+    
+    parsermask = copy(decoder_tokens[:,2:end])                           # (B, Ty-1)
+    #Pad END_SYMBOL and padding value also if there is any
     parsermask[parsermask.==end_symbol_idx] .= 0
     parsermask[parsermask.==decodervocab_pad_idx] .= 0                                  
     parsermask[parsermask.!=0] .= 1
-    edgeheads  = head_indices'                                                          # -> (B, Ty-2)
-    edgelabels = head_tags'                                                             # -> (B, Ty-2)
+    edgeheads  = head_indices                                            # (B, Ty-2)
+    edgelabels = head_tags                                               # (B, Ty-2)
 
-    headpads= size(parsermask,2)-size(head_indices,1)
+    headpads= size(parsermask,2)-size(head_indices,2)
     edgeheads = hcat(edgeheads, zeros(max_ind,headpads))
     edgelabels = hcat(edgelabels, zeros(max_ind,headpads))
 

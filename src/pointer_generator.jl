@@ -60,7 +60,6 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
     scaled_copysrc_probs = bmm(permutedims(scaled_srcattentions, [3,1,2]), _atype(srcattentionmaps)) ; @size scaled_copysrc_probs (1,Tx+2,B);  # Tx+2 is the dynamic srcvocabsize
 
     # Ptgt: 
-    #TODO: do tgtattentions                                     
     tgtattentions = permutedims(tgtattentions, [1,3,2])         ; @size  tgtattentions (Ty,B,1);
     scaled_tgtattentions = tgtattentions .* p_copytgt           ; @size scaled_tgtattentions (Ty,B,1);  ; @size tgtattentionmaps (Ty,Ty+1,B);
     scaled_copytgt_probs = bmm(permutedims(scaled_tgtattentions, [3,1,2]), _atype(tgtattentionmaps))    ; @size scaled_copytgt_probs (1,Ty+1,B);    # Ty is the dynamic tgtvocabsize
@@ -137,7 +136,6 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
     # Add eps for numerical stability.
     likelihood = likelihood .+ 1e-20 #eps
 
-    # TODO: Coverage records
     loss = sum(-log.(likelihood) .* non_pad_mask) + coverage_loss     # Drop pads.
 
 

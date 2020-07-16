@@ -77,7 +77,7 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
    
 
     srcwattn = bidirectional ? param(hidden,3hidden) : param(hidden,2hidden)
-    tgtwattn = param(hidden,2hidden)
+    tgtwattn = param(hidden,3hidden)
 
 
     srcattn = Attention(wquery, srcwattn, srcscale)
@@ -155,7 +155,7 @@ end
 # Note: the paper mentions a final `tanh` transform, however the final version of the
 # reference code does not use `tanh` and gets better results. Therefore we will skip `tanh`.
 
-function (a::Attention)(cell, mem; tgt=false, t=nothing)
+function (a::Attention)(cell, mem; tgt=false, t=nothing, srcattnvector=nothing)
     ## (Hy,B,Ty/1), ((Hy,Tx,B), (Hx*Dx,Tx,B)) -> (Hy,B,Ty/1)
     mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, size(x)[2:end]...)))
     qtrans(q) = (size(q,3)==1 ? reshape(q,(1,size(q,1),:)) : permutedims(q,(3,1,2)))
@@ -178,7 +178,12 @@ function (a::Attention)(cell, mem; tgt=false, t=nothing)
     alignments = atrans(alignments)          #; @size alignments (Tx,Ty,B)
     context = bmm(vals, alignments)          #; @size context (HxDx,Ty,B)
     context = ctrans(context)                #; @size context (HxDx,B,Ty)
-    attnvec = mmul(a.wattn, vcat(cell,context)) #; @size attnvec (Hy,B,Ty)
+
+    if !isnothing(srcattnvector)
+        attnvec = mmul(a.wattn, vcat(cell,context, srcattnvector)) #; @size attnvec (Hy,B,Ty)
+    else
+        attnvec = mmul(a.wattn, vcat(cell,context)) 
+    end
     return attnvec, alignments
     ## return tanh.(attnvec)
     ## doc says tanh, implementation does not have it, no tanh does better:
@@ -215,7 +220,7 @@ function decode(s::S2S, tokens, tgtpostags, corefs, srcmem, prev, t, prevkeys, p
         vals = cat(prevvals, vals, dims=2)
     end
     tgtmem=(keys,vals)
-    tgtattnvector, tgtalignments = s.tgtattention(z, tgtmem, tgt=true, t=t)                #; @size srcattnvector (Hy,B,1); @size srcalignments (Tx,1,B)
+    tgtattnvector, tgtalignments = s.tgtattention(z, tgtmem, tgt=true, t=t, srcattnvector=srcattnvector)                #; @size srcattnvector (Hy,B,1); @size srcalignments (Tx,1,B)
     return z, srcattnvector, srcalignments, tgtattnvector, tgtalignments,  keys, vals
 end
 

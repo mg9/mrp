@@ -258,7 +258,7 @@ function amrgraph_getlistdata(amr; bos=nothing, eos=nothing, bert_tokenizer=noth
             push!(tgt_copy_indices, i)
         end
 
-        for (node, indices) in node_to_idx
+        for (node, indices) in node_to_idx ## TODO: check that part again
             if length(indices) > 1
                 copy_idx = indices[1] + copy_offset
                 for token_idx in indices[2:end]
@@ -291,7 +291,7 @@ function amrgraph_getlistdata(amr; bos=nothing, eos=nothing, bert_tokenizer=noth
         end
 
 
-        function add_source_side_tags_to_target_side(_src_tokens, _src_tags)
+        function add_source_side_tags_to_target_side(_src_tokens, _src_tags) ## Check that part again.
             @assert length(_src_tags) == length(_src_tokens)
             tag_counter = Dict()
             for (src_token, src_tag) in zip(_src_tokens, _src_tags)
