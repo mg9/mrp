@@ -61,7 +61,6 @@ end
 
 function calculate_graphdecoder_metrics(gm::GraphMetrics)
     UAS = LAS = EL = 0
-
     if gm.total_words > 0
         unlabeled_attachment_score = float(gm.unlabeled_correct) / float(gm.total_words)
         labeled_attachment_score = float(gm.labeled_correct) / float(gm.total_words)
@@ -73,8 +72,6 @@ function calculate_graphdecoder_metrics(gm::GraphMetrics)
         LAS = labeled_attachment_score
         EL  = value(edgeloss)
     end
-
-    
     return UAS, LAS, EL
 end
 
@@ -96,7 +93,6 @@ function calculate_pointergenerator_metrics(pm::PointerGeneratorMetrics)
     end
     return accuracy, xent, ppl, srccopy_accuracy, tgtcopy_accuracy, pm.n_words
 end
-
 
 
 function reset(gm::GraphMetrics)

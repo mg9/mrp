@@ -30,8 +30,6 @@ struct S2S
     srcattention::Attention  
     tgtattention::Attention     
     dropout::Real   
-    #srceos::Int       # source tokens eos #TODO: change here with vocab datatype
-    #tgteos::Int       # target tokens eos #TODO: change here with vocab datatype
 end
 
 
@@ -52,7 +50,6 @@ end
 # * The attention parameter `scale` is used to scale the attention scores before softmax, set it to a parameter of size 1.
 # * The attention parameter `wattn` is used to transform the concatenation of the decoder output and the context vector to the attention vector. It should be a parameter of size `(hidden,2*hidden)` if unidirectional, `(hidden,3*hidden)` if bidirectional.
 
-
 function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=false, dropout=0)
     @assert !bidirectional || iseven(layers) "layers should be even for bidirectional models"
     srctokenembed  = Embed(ENCODER_VOCAB_SIZE, TOKEN_EMB_DIM)
@@ -71,14 +68,11 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
     tgtmemory =  Memory(1)
     wquery = 1
     
-
     srcscale = param(1)
     tgtscale = param(1)
    
-
     srcwattn = bidirectional ? param(hidden,3hidden) : param(hidden,2hidden)
     tgtwattn = param(hidden,3hidden)
-
 
     srcattn = Attention(wquery, srcwattn, srcscale)
     tgtattn = Attention(wquery, tgtwattn, tgtscale)
@@ -202,7 +196,6 @@ end
 # input feeding). The resulting tensor is passed through `s.decoder`. Finally the
 # `s.attention` layer takes the decoder output and the encoder memory to compute the
 # "attention vector" which is returned by `decode()`.
-
 
 function decode(s::S2S, tokens, tgtpostags, corefs, srcmem, prev, t, prevkeys, prevvals)
     B,Ty = size(corefs)

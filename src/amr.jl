@@ -407,6 +407,3 @@ function find_similar_token(token, tokens)
     return nothing
 end
 
-
-
-

@@ -41,8 +41,6 @@ function DeepBiaffineGraphDecoder(inputsize::Int, edgenodehiddensize::Int, edgel
 end
 
 
-
-
 function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabels)
     Hy, B, num_nodes = size(hiddens)
     parsermask = _atype(parsermask)
@@ -56,11 +54,11 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     Ty = num_nodes+1
     dummy = convert(_atype, zeros(Hy,B,1))
     head_sentinel = g.head_sentinel .+ dummy   ;@size head_sentinel (Hy,B,1)
-    hiddens = cat(head_sentinel, hiddens, dims=3)                                           ;@size hiddens (Hy,B,Ty)
+    hiddens = cat(head_sentinel, hiddens, dims=3)                                               ;@size hiddens (Hy,B,Ty)
 
-    if !isnothing(edgeheads); edgeheads = cat(_atype(ones(B,1)), edgeheads, dims=2); end           ;@size edgeheads  (B,Ty)
-    if !isnothing(edgelabels); edgelabels = cat(_atype(ones(B,1)), edgelabels, dims=2); end        ;@size edgelabels (B,Ty)
-    parsermask = cat(_atype(ones(B,1)), parsermask, dims=2)                                         ;@size parsermask (B,Ty)
+    if !isnothing(edgeheads); edgeheads = cat(_atype(ones(B,1)), edgeheads, dims=2); end        ;@size edgeheads  (B,Ty)
+    if !isnothing(edgelabels); edgelabels = cat(_atype(ones(B,1)), edgelabels, dims=2); end     ;@size edgelabels (B,Ty)
+    parsermask = cat(_atype(ones(B,1)), parsermask, dims=2)                                     ;@size parsermask (B,Ty)
     hiddens = permutedims(hiddens, [1,3,2]) ;@size hiddens (Hy,Ty,B)
     hidden_rs = reshape(hiddens, :,Ty*B)
 
@@ -138,7 +136,7 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     _edgenode_scores = edgenode_scores .+ convert(_atype,a)             ;@size _edgenode_scores (Ty,Ty,B)                       
     minus_mask = 1 .- parsermask
     settoinf(x) = x==1.0 ? x= -1e8 : x=x                                               
-    minus_mask = settoinf.(Array(minus_mask))'                                 ;@size minus_mask (Ty,B)
+    minus_mask = settoinf.(Array(minus_mask))'                          ;@size minus_mask (Ty,B)
     minus_mask = reshape(minus_mask, (1,Ty,B))                                         
     _edgenode_scores = _edgenode_scores .+ _atype(minus_mask)           ;@size _edgenode_scores (Ty,Ty,B)               
     minus_mask = reshape(minus_mask, (Ty,1,B))                                         
@@ -152,12 +150,12 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
 
     ## Predictions of edge_labels
     pred_edgeheads_inds  = convert(Array{Int32}, (pred_edgeheads))'
-    _edgelabel_h = getreps(pred_edgeheads_inds, edgelabel_h)                                            ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
-    _edgelabel_h = permutedims(_edgelabel_h, [3,2,1])                                                           ;@size _edgelabel_h (edgelabel_hiddensize,B,Ty)
-    _edgelabel_scores = g.edgelabel_bilinear(_edgelabel_h, permutedims(edgelabel_m, [3,1,2]))                ;@size edgelabel_scores (B,Ty, num_edgelabels)
+    _edgelabel_h = getreps(pred_edgeheads_inds, edgelabel_h)                                             ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
+    _edgelabel_h = permutedims(_edgelabel_h, [3,2,1])                                                    ;@size _edgelabel_h (edgelabel_hiddensize,B,Ty)
+    _edgelabel_scores = g.edgelabel_bilinear(_edgelabel_h, permutedims(edgelabel_m, [3,1,2]))            ;@size edgelabel_scores (B,Ty, num_edgelabels)
     inpa(x) = return x[3]     # remove cartesian type 
-    pred_edgelabels = argmax(value(_edgelabel_scores), dims=3)           ;@size pred_edgelabels (B,Ty,1)
-    pred_edgelabels = reshape(inpa.(pred_edgelabels), (B,Ty))           ;@size pred_edgelabels (B,Ty)
+    pred_edgelabels = argmax(value(_edgelabel_scores), dims=3)               ;@size pred_edgelabels (B,Ty,1)
+    pred_edgelabels = reshape(inpa.(pred_edgelabels), (B,Ty))                ;@size pred_edgelabels (B,Ty)
 
 
     ## Graph Decoder Metrics

@@ -31,15 +31,13 @@ ENCODER_CHAR_VOCAB_SIZE = 125
 DECODER_CHAR_VOCAB_SIZE = 87
 
 
-
 amrvocab = AMRVocab()
 train_path = "../data/AMR/amr_2.0/train.txt.features.preproc"
-trn  = @time AMRDataset(train_path, amrvocab, 1, init_vocab=true)  # 36519 instances
-
 dev_path = "../data/AMR/amr_2.0/dev.txt.features.preproc"
-dev  = @time AMRDataset(dev_path, amrvocab, 1)    # 1368 instances
-
 #test_path = "../data/AMR/amr_2.0/test.txt.features.preproc" 
+
+trn  = @time AMRDataset(train_path, amrvocab, 1, init_vocab=true)  # 36519 instances
+dev  = @time AMRDataset(dev_path, amrvocab, 1)    # 1368 instances
 #test  = AMRDataset(test_path, amrvocab, 32)   # 1371 instances
 
 ctrn = @time collect(trn)
@@ -47,7 +45,6 @@ cdev = @time collect(dev)
 
 println("Trn created with path $train_path", " with ", trn.ninstances, " instances")
 println("Dev created with path $dev_path", " with ", dev.ninstances, " instances")
-
 
 
 function train(m, epochs)

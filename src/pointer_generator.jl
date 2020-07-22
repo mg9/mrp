@@ -37,28 +37,27 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
     ; @size srcattentionmaps (Tx,Tx+2,B); @size tgtattentionmaps (numtarget,numtarget+1,B);
     ; @size generatetargets (Ty,B); @size srccopytargets (Ty,B); @size tgtcopytargets (Ty,B)
 
-
     # Pointer probability. (pgen + psrc +ptgt =1)
-    p = softmax(pg.linearpointer(attnvector), dims=1)                            ; @size p (3,Ty*B);  # switch between pgen-psrc-ptgt
+    p = softmax(pg.linearpointer(attnvector), dims=1)                           ; @size p (3,Ty*B);  # switch between pgen-psrc-ptgt
     p_copysrc = p[1:1,:]                                                        ; @size p_copysrc (1,Ty*B);
-    p_copysrc = reshape(p_copysrc, (1,Ty,B))                                     ; @size p_copysrc (1,Ty,B);
+    p_copysrc = reshape(p_copysrc, (1,Ty,B))                                    ; @size p_copysrc (1,Ty,B);
     p_copytgt = p[2:2,:]                                                        ; @size p_copytgt (1,Ty*B);
-    p_copytgt = reshape(p_copytgt, (1,Ty,B))                                     ; @size p_copytgt (1,Ty, B);
+    p_copytgt = reshape(p_copytgt, (1,Ty,B))                                    ; @size p_copytgt (1,Ty,B);
     p_gen = p[3:3,:]                                                            ; @size p_gen (1,Ty*B);
-    p_gen = reshape(p_gen, (1,Ty, B))                                             ; @size p_gen (1,Ty,B);
+    p_gen = reshape(p_gen, (1,Ty, B))                                           ; @size p_gen (1,Ty,B);
 
 
     # Pgen: Probability distribution over the vocabulary.
-    scores = pg.projection(attnvector)                             ; @size scores (pg.vocabsize,Ty*B);
+    scores = pg.projection(attnvector)                                  ; @size scores (pg.vocabsize,Ty*B);
     # Make score of decoder pad -Inf
     infvec = zeros(size(scores,1))
     infvec[decodervocab_pad_idx]=Inf
     scores = scores .- convert(_atype,infvec) 
 
-    vocab_probs = softmax(scores, dims=1)                           ; @size vocab_probs (pg.vocabsize,Ty*B)
-    vocab_probs = reshape(vocab_probs, (pg.vocabsize, Ty,B))           ; @size vocab_probs (pg.vocabsize,Ty,B);
-    scaled_vocab_probs = vocab_probs .* p_gen                       ; @size scaled_vocab_probs (pg.vocabsize,Ty,B);
-    scaled_vocab_probs = permutedims(scaled_vocab_probs, [2,1,3])   ; @size scaled_vocab_probs (Ty,pg.vocabsize,B);
+    vocab_probs = softmax(scores, dims=1)                               ; @size vocab_probs (pg.vocabsize,Ty*B)
+    vocab_probs = reshape(vocab_probs, (pg.vocabsize, Ty,B))            ; @size vocab_probs (pg.vocabsize,Ty,B);
+    scaled_vocab_probs = vocab_probs .* p_gen                           ; @size scaled_vocab_probs (pg.vocabsize,Ty,B);
+    scaled_vocab_probs = permutedims(scaled_vocab_probs, [2,1,3])       ; @size scaled_vocab_probs (Ty,pg.vocabsize,B);
 
     # Psrc: 
     scaled_srcattentions = srcattentions .* p_copysrc                ; @size scaled_srcattentions (Tx,Ty,B); 
@@ -90,7 +89,7 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
     pad_idx = 1 #trn.tgtvocab.token_to_idx["@@PADDING@@"]
     unk_idx = 2 #trn.tgtvocab.token_to_idx["@@UNKNOWN@@"]
     non_pad_mask  = convert(_atype, generatetargets .!= pad_idx)                                        ;@size non_pad_mask (Ty,B)                                               
-    srccopy_mask  = convert(_atype, (srccopytargets .!= unk_idx) .* (srccopytargets .!= pad_idx))      ;@size srccopy_mask (Ty,B) # 2 is UNK id, 1 is pad id
+    srccopy_mask  = convert(_atype, (srccopytargets .!= unk_idx) .* (srccopytargets .!= pad_idx))       ;@size srccopy_mask (Ty,B) # 2 is UNK id, 1 is pad id
     non_srccopy_mask = 1 .- srccopy_mask
     tgtcopy_mask = convert(_atype, (tgtcopytargets .!= 0))                                              ;@size tgtcopy_mask (Ty,B) # 0 is the index for coref NA
     non_tgtcopy_mask = 1 .- tgtcopy_mask
@@ -115,23 +114,23 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
     probs = permutedims(probs, [2,1,3]) ;@size probs (total_vocabsize, Ty,B)
 
 
-    tgtcopytargets_withoffset = tgtcopytargets .+ (pg.vocabsize+src_dynamic_vocabsize+1)        ;@size tgtcopytargets_withoffset (Ty,B) ## 
-    tgtcopy_targetprobs = reshape(probs[findindices(probs, tgtcopytargets_withoffset)], Ty,B)                   ;@size tgtcopy_targetprobs (Ty,B)
-    tgtcopy_targetprobs = tgtcopy_targetprobs .* tgtcopy_mask                               ;@size tgtcopy_targetprobs (Ty,B)
+    tgtcopytargets_withoffset = tgtcopytargets .+ (pg.vocabsize+src_dynamic_vocabsize+1)                ;@size tgtcopytargets_withoffset (Ty,B) 
+    tgtcopy_targetprobs = reshape(probs[findindices(probs, tgtcopytargets_withoffset)], Ty,B)           ;@size tgtcopy_targetprobs (Ty,B)
+    tgtcopy_targetprobs = tgtcopy_targetprobs .* tgtcopy_mask                                           ;@size tgtcopy_targetprobs (Ty,B)
 
 
-    srccopytargets_withoffset = srccopytargets .+ (pg.vocabsize +1)                           ;@size srccopytargets_withoffset (Ty,B) 
-    srccopy_targetprobs = reshape(probs[findindices(probs,  srccopytargets_withoffset)], Ty,B)               ;@size srccopy_targetprobs (Ty,B)
-    srccopy_targetprobs = srccopy_targetprobs .* srccopy_mask .* non_tgtcopy_mask           ;@size srccopy_targetprobs (Ty,B)    
+    srccopytargets_withoffset = srccopytargets .+ (pg.vocabsize +1)                                     ;@size srccopytargets_withoffset (Ty,B) 
+    srccopy_targetprobs = reshape(probs[findindices(probs,  srccopytargets_withoffset)], Ty,B)          ;@size srccopy_targetprobs (Ty,B)
+    srccopy_targetprobs = srccopy_targetprobs .* srccopy_mask .* non_tgtcopy_mask                       ;@size srccopy_targetprobs (Ty,B)    
 
 
-    gentargets_withoffset = generatetargets .+ 1                                            ;@size srccopytargets_withoffset (Ty,B) 
-    generate_targetprobs = reshape(probs[findindices(probs, gentargets_withoffset)], Ty,B)               ;@size srccopy_targetprobs (Ty,B)
-    generate_targetprobs = generate_targetprobs .* non_srccopy_mask .* non_tgtcopy_mask     ;@size generate_targetprobs (Ty,B) 
+    gentargets_withoffset = generatetargets .+ 1                                                        ;@size srccopytargets_withoffset (Ty,B) 
+    generate_targetprobs = reshape(probs[findindices(probs, gentargets_withoffset)], Ty,B)              ;@size srccopy_targetprobs (Ty,B)
+    generate_targetprobs = generate_targetprobs .* non_srccopy_mask .* non_tgtcopy_mask                 ;@size generate_targetprobs (Ty,B) 
 
 
    # Except copy-oov nodes, all other nodes should be copied.
-    likelihood = generate_targetprobs + tgtcopy_targetprobs + srccopy_targetprobs           ;@size likelihood (Ty,B)
+    likelihood = generate_targetprobs + tgtcopy_targetprobs + srccopy_targetprobs                       ;@size likelihood (Ty,B)
     num_tokens = sum(non_pad_mask .== 1)
 
     if !(force_copy)
@@ -143,9 +142,7 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
 
     # Add eps for numerical stability.
     likelihood = likelihood .+ 1e-20 #eps
-
     loss = sum(-log.(likelihood) .* non_pad_mask) + coverage_loss     # Drop pads.
-
 
     # Mask out copy targets for which copy does not happen.
     targets = _atype(tgtcopytargets_withoffset) .* tgtcopy_mask + 
@@ -156,7 +153,6 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
     #println("loss: $loss")
     return loss
 end
-
 
 
 function findindices(y,a::AbstractArray{<:Integer}; dims=1)
