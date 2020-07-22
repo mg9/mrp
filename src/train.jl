@@ -32,24 +32,22 @@ DECODER_CHAR_VOCAB_SIZE = 87
 
 
 
-
+amrvocab = AMRVocab()
 train_path = "../data/AMR/amr_2.0/train.txt.features.preproc"
+trn  = @time AMRDataset(train_path, amrvocab, 1, init_vocab=true)  # 36519 instances
+
 dev_path = "../data/AMR/amr_2.0/dev.txt.features.preproc"
-#test_path = "../data/AMR/amr_2.0/test.txt.features.preproc"
+dev  = @time AMRDataset(dev_path, amrvocab, 1)    # 1368 instances
 
-trnamrs = read_preprocessed_files(train_path) # 36519 instances
-devamrs = read_preprocessed_files(dev_path)    # 1368 instances
-#testamrs = read_preprocessed_files(test_path) # 1371 instances
+#test_path = "../data/AMR/amr_2.0/test.txt.features.preproc" 
+#test  = AMRDataset(test_path, amrvocab, 32)   # 1371 instances
 
-_trnamrs=  sort(collect(trnamrs),by=x->length(x.graph.variables()), rev=false)
-trn  = AMRDataset(_trnamrs[1:15000], 32) 
-dev  = AMRDataset(devamrs, 32)
-#test = AMRDataset(testamrs, 32)
 ctrn = @time collect(trn)
 cdev = @time collect(dev) 
 
 println("Trn created with path $train_path", " with ", trn.ninstances, " instances")
 println("Dev created with path $dev_path", " with ", dev.ninstances, " instances")
+
 
 
 function train(m, epochs)
@@ -58,12 +56,9 @@ function train(m, epochs)
         println("epoch $i......")
         ##Trn
         trnloss =  0.0 
-        trnpgenloss = 0.0
-        trngraphloss = 0.0
-        for (srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) in ctrn
-            J = @diff m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)[1]
-            pgenloss = m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)[2]
-            graphloss = m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)[3]
+        for (i, (srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)) in enumerate(ctrn)
+            println("iteration $i")
+            J = @diff m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
             for par in params(m)
                 g = grad(J, par)
                 if g===nothing; 
@@ -74,8 +69,7 @@ function train(m, epochs)
                 end
             end
             trnloss += value(J)
-            trnpgenloss += value(pgenloss)
-            trngraphloss += value(graphloss)
+            println("iteration $i, iterationloss: $trnloss")
         end
         trnend=time()
         elapsed_time = trnend - trnstart
@@ -84,30 +78,25 @@ function train(m, epochs)
         uas, las, el = calculate_graphdecoder_metrics(m.g.metrics)
 
         println("--Train Metrics--")
-        println("trnloss: $trnloss,  trnpgenloss: $trnpgenloss, trngraphloss: $trngraphloss")
+        println("trnloss: $trnloss") #,  trnpgenloss: $trnpgenloss, trngraphloss: $trngraphloss")
         println("PointerGeneratormetrics, all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy, ppl=$ppl, n_words: ", n_words)
         println("GraphDecoder metrics, UAS=$uas LAS=$las EL=$el")
         println("Epoch elapsed time: $elapsed_time sec.")
 
         reset(m.p.metrics)
         reset(m.g.metrics)
-
-         
+        
         ##Dev
         devloss =  0.0 
-        devgraphloss = 0.0
-        devpgenloss = 0.0
         for (srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) in cdev
-            batchloss, graphloss, pgeneratorloss = m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
+            batchloss= m(srcpostags, tgtpostags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
             devloss += batchloss
-            devgraphloss += graphloss
-            devpgenloss  += pgeneratorloss
         end
         accuracy, xent, ppl, srccopy_accuracy, tgtcopy_accuracy, n_words = calculate_pointergenerator_metrics(m.p.metrics)
         uas, las, el = calculate_graphdecoder_metrics(m.g.metrics)
 
         println("--Dev Metrics--")
-        println("devloss: $devloss, devpgenloss: $devpgenloss, devgraphloss: $devgraphloss")
+        println("devloss: $devloss")
         println("PointerGeneratormetrics, all_acc=$accuracy src_acc=$srccopy_accuracy tgt_acc=$tgtcopy_accuracy, n_words: ", n_words)
         println("GraphDecoder metrics, UAS=$uas LAS=$las EL=$el")
         reset(m.p.metrics)

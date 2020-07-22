@@ -16,130 +16,90 @@ mutable struct AMRDataset
     number_bert_oov_ids
     number_non_oov_pos_tags
     number_pos_tags
-    srcvocab
-    srccharactervocab
-    srcpostagvocab
-    srcmustcopytagsvocab
-    srccopyindicesvocab
-    tgtvocab
-    tgtcharactervocab
-    tgtpostagvocab
-    tgtcopymaskvocab
-    tgtcopyindicesvocab
-    headtagsvocab
-    headindicesvocab
 end
 
 
-function AMRDataset(amrinstances, batchsize; shuffled=false, word_splitter=nothing, sort_by="tgttokens")
+function AMRDataset(file::String, amrvocab::AMRVocab, batchsize; shuffled=false, word_splitter=nothing, sort_by="tgttokens", evaluation=false, init_vocab=false)
     word_splitter= nothing #TODO: nothing until BERT time 
-    _number_bert_ids = 0
-    _number_bert_oov_ids = 0
-    _number_non_oov_pos_tags = 0
-    _number_pos_tags = 0
-    srcvocab = Vocab([])
-    srccharactervocab = Vocab([])
-    srcpostagvocab = Vocab([])
-    srcmustcopytagsvocab = Vocab([])
-    srccopyindicesvocab = Vocab([])
-    tgtvocab = Vocab([])
-    tgtcharactervocab = Vocab([])
-    tgtpostagvocab = Vocab([])
-    tgtcopymaskvocab = Vocab([])
-    tgtcopyindicesvocab = Vocab([])
-    headtagsvocab = Vocab([])
-    headindicesvocab = Vocab([])
-
-    if sort_by === "srctokens"
-        amrinstances =  sort(collect(amrinstances),by=x->length(x.tokens), rev=false)
-    elseif sort_by === "tgttokens"
-        amrinstances =  sort(collect(amrinstances),by=x->length(x.graph.variables()), rev=false)
-    end
-
-    AMRDataset(amrinstances, length(amrinstances), batchsize,shuffled, word_splitter,  _number_bert_ids, _number_bert_oov_ids, _number_non_oov_pos_tags,_number_pos_tags,
-    srcvocab, srccharactervocab, srcpostagvocab, srcmustcopytagsvocab, srccopyindicesvocab, tgtvocab, tgtcharactervocab, tgtpostagvocab, tgtcopymaskvocab, tgtcopyindicesvocab,
-    headtagsvocab, headindicesvocab)
-end
-
-
-function make_instance(d::AMRDataset, amr, evaluation=false)
-    amrgraph_buildextras(amr.graph)
-    max_tgt_length = Any
-    if evaluation; max_tgt_length = nothing
-    else; max_tgt_length = 60; end
-    list_data = amrgraph_getlistdata(amr, bos=START_SYMBOL, eos=END_SYMBOL, bert_tokenizer=d.word_splitter, max_tgt_length=max_tgt_length)
-
-    #TODO: BERT thing for src_token_ids & src_token_subword_index
-
-    srccharacters= []
-    for token in list_data["src_tokens"]
-        for c in token; push!(srccharacters,c); end
-    end
-
-    tgtcharacters= []
-    for token in list_data["tgt_tokens"]
-       for c in token; push!(tgtcharacters,c); end
-    end
-
-    vocab_addtokens(d.srcvocab, list_data["src_tokens"])
-    vocab_addtokens(d.tgtvocab, list_data["tgt_tokens"])
-    vocab_addtokens(d.srccharactervocab, srccharacters)
-    vocab_addtokens(d.tgtcharactervocab, tgtcharacters)
-    vocab_addtokens(d.srcpostagvocab, list_data["src_pos_tags"])
-    vocab_addtokens(d.tgtpostagvocab, list_data["tgt_pos_tags"])
-    vocab_addtokens(d.headtagsvocab, list_data["head_tags"]) 
-
-    d.number_pos_tags += length(list_data["tgt_pos_tags"])
-    for tag in list_data["tgt_pos_tags"]
-        if tag != DEFAULT_OOV_TOKEN; d.number_non_oov_pos_tags +=1; end
-    end
-
-
-    i=2 
-    for (k,v) in list_data["src_copy_map"]
-       if v!=2
-           i+=1
-       end
-    end
-
-    srccopymap = zeros(length(list_data["src_copy_map"]), i) # we need matrice as: 2(unk id)+[token!=unk]  x 2(unk id)+[token!=unk] 
-    for (k,v) in list_data["src_copy_map"]; srccopymap[k,v] = 1; end
-    #srccopymap = hcat(zeros(size(srccopymap,1),1), srccopymap)
-    #srccopymap = vcat(zeros(1,size(srccopymap,2)), srccopymap)
-
-
-    tgtcopymap = zeros(length(list_data["tgt_copy_map"]), length(list_data["tgt_copy_map"]))
-    for (k,v) in list_data["tgt_copy_map"]; tgtcopymap[k,v] = 1; end
-    #tgtcopymap = hcat(zeros(size(tgtcopymap,1),1), tgtcopymap)
-    #tgtcopymap = vcat(zeros(1,size(tgtcopymap,2)), tgtcopymap)
-
+    number_bert_ids = 0
+    number_bert_oov_ids = 0
+    number_non_oov_pos_tags = 0
+    number_pos_tags = 0
    
-    # TODO: Look again sequenceLabelField in original code
-    vocab_addtokens(d.srcmustcopytagsvocab, list_data["src_must_copy_tags"]) 
-    vocab_addtokens(d.srccopyindicesvocab, list_data["src_copy_indices"]) 
-    vocab_addtokens(d.tgtcopyindicesvocab, list_data["tgt_copy_indices"]) ## coref_tags
-    vocab_addtokens(d.tgtcopymaskvocab, list_data["tgt_copy_mask"]) ## coref_mask_tags
-    vocab_addtokens(d.headindicesvocab, list_data["head_indices"]) 
+    amrs = read_preprocessed_files(file)
+    if sort_by === "srctokens"
+        amrs =  sort(collect(amrs),by=x->length(x.tokens), rev=false)
+    elseif sort_by === "tgttokens"
+        amrs =  sort(collect(amrs),by=x->length(x.graph.variables()), rev=false)
+    end
 
-    instance = Dict()
-    instance["head_tags"] = vocab_indexsequence(d.headtagsvocab, list_data["head_tags"])
-    instance["encoder_tokens"] = vocab_indexsequence(d.srcvocab, list_data["src_tokens"])
-    instance["decoder_characters"] = vocab_indexsequence(d.tgtcharactervocab, tgtcharacters)
-    instance["tgt_pos_tags"] = vocab_indexsequence(d.tgtpostagvocab, list_data["tgt_pos_tags"])
-    instance["encoder_characters"] = vocab_indexsequence(d.srccharactervocab, srccharacters)
-    instance["decoder_tokens"] = vocab_indexsequence(d.tgtvocab, list_data["tgt_tokens"])
-    instance["src_pos_tags"] = vocab_indexsequence(d.srcpostagvocab, list_data["src_pos_tags"])
-    instance["tgt_copy_mask"] = list_data["tgt_copy_mask"] ## TODO: is that correct??
-    instance["tgt_copy_indices"] = list_data["tgt_copy_indices"] ## TODO: is that correct??
-    instance["src_must_copy_tags"] = list_data["src_must_copy_tags"] ## TODO: is that correct??
-    instance["src_copy_indices"] = list_data["src_copy_indices"] ## TODO: is that correct??
-    instance["head_indices"] = list_data["head_indices"] ## TODO: is that correct??
-    instance["src_token_ids"] = nothing # BERT
-    instance["src_token_subword_index"] = nothing #BERT
-    instance["tgt_copy_map"]  = tgtcopymap
-    instance["src_copy_map"]  = srccopymap
+    amrinstances = []
+    for amr in amrs[1:min(length(amrs),500)]
+        amrgraph_buildextras(amr.graph)
+        max_tgt_length = Any
+        if evaluation; max_tgt_length = nothing
+        else; max_tgt_length = 60; end
+        list_data = amrgraph_getlistdata(amr, bos=START_SYMBOL, eos=END_SYMBOL, bert_tokenizer=word_splitter, max_tgt_length=max_tgt_length)
 
-    return instance
+        srccharacters= []
+        for token in list_data["src_tokens"]
+            for c in token; push!(srccharacters,c); end
+        end
+        tgtcharacters= []
+        for token in list_data["tgt_tokens"]
+           for c in token; push!(tgtcharacters,c); end
+        end
+
+        if init_vocab
+            vocab_addtokens(amrvocab.srcvocab, list_data["src_tokens"])
+            vocab_addtokens(amrvocab.tgtvocab, list_data["tgt_tokens"])
+            vocab_addtokens(amrvocab.srccharactervocab, srccharacters)
+            vocab_addtokens(amrvocab.tgtcharactervocab, tgtcharacters)
+            vocab_addtokens(amrvocab.srcpostagvocab, list_data["src_pos_tags"])
+            vocab_addtokens(amrvocab.tgtpostagvocab, list_data["tgt_pos_tags"])
+            vocab_addtokens(amrvocab.headtagsvocab, list_data["head_tags"]) 
+        end
+
+
+        number_pos_tags += length(list_data["tgt_pos_tags"])
+        for tag in list_data["tgt_pos_tags"]
+            if tag != DEFAULT_OOV_TOKEN; number_non_oov_pos_tags +=1; end
+        end
+
+
+        i=2 
+        for (k,v) in list_data["src_copy_map"]
+           if v!=2
+               i+=1
+           end
+        end
+
+        srccopymap = zeros(length(list_data["src_copy_map"]), i) # we need matrice as: 2(unk id)+[token!=unk]  x 2(unk id)+[token!=unk] 
+        for (k,v) in list_data["src_copy_map"]; srccopymap[k,v] = 1; end
+        tgtcopymap = zeros(length(list_data["tgt_copy_map"]), length(list_data["tgt_copy_map"]))
+        for (k,v) in list_data["tgt_copy_map"]; tgtcopymap[k,v] = 1; end
+
+        instance = Dict()
+        instance["head_tags"] = vocab_indexsequence(amrvocab.headtagsvocab, list_data["head_tags"])
+        instance["encoder_tokens"] = vocab_indexsequence(amrvocab.srcvocab, list_data["src_tokens"])
+        instance["decoder_characters"] = vocab_indexsequence(amrvocab.tgtcharactervocab, tgtcharacters)
+        instance["tgt_pos_tags"] = vocab_indexsequence(amrvocab.tgtpostagvocab, list_data["tgt_pos_tags"])
+        instance["encoder_characters"] = vocab_indexsequence(amrvocab.srccharactervocab, srccharacters)
+        instance["decoder_tokens"] = vocab_indexsequence(amrvocab.tgtvocab, list_data["tgt_tokens"])
+        instance["src_pos_tags"] = vocab_indexsequence(amrvocab.srcpostagvocab, list_data["src_pos_tags"])
+        instance["tgt_copy_mask"] = list_data["tgt_copy_mask"] ## TODO: is that correct??
+        instance["tgt_copy_indices"] = list_data["tgt_copy_indices"] ## TODO: is that correct??
+        instance["src_must_copy_tags"] = list_data["src_must_copy_tags"] ## TODO: is that correct??
+        instance["src_copy_indices"] = list_data["src_copy_indices"] ## TODO: is that correct??
+        instance["head_indices"] = list_data["head_indices"] ## TODO: is that correct??
+        #println("head_indices: ", list_data["head_indices"] )
+        instance["src_token_ids"] = nothing # BERT
+        instance["src_token_subword_index"] = nothing #BERT
+        instance["tgt_copy_map"]  = tgtcopymap
+        instance["src_copy_map"]  = srccopymap
+        push!(amrinstances, instance)
+    end
+    AMRDataset(amrinstances, length(amrinstances), batchsize, shuffled, word_splitter,  number_bert_ids, number_bert_oov_ids,  number_non_oov_pos_tags, number_pos_tags)
 end
 
 
@@ -153,7 +113,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
         return nothing 
     end
     max_ind = min(new_state_len, d.batchsize)    
-    amrs_raw = d.amrinstances[new_state[1:max_ind]]
+    amrs_instances = d.amrinstances[new_state[1:max_ind]]
 
     head_tags= []
     tgt_copy_mask = []
@@ -173,8 +133,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     src_copy_map = []
     corefs= []
 
-    for (i,amr) in enumerate(amrs_raw)
-        instance = make_instance(d, amr)
+    for instance in amrs_instances
         push!(head_tags, instance["head_tags"])
         push!(tgt_copy_mask, instance["tgt_copy_mask"])
         push!(encoder_tokens, instance["encoder_tokens"])
@@ -289,7 +248,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
 
     
     maxheadindices = maximum(length.(head_indices))  ## Check that part again.
-    head_indices = pad_zero_right.(head_indices, maxheadindices)
+    head_indices = pad_one_right.(head_indices, maxheadindices)
     head_indices = hcat(head_indices...)
     head_indices = Integer.(head_indices)' #(B,Ty-2)
 
@@ -319,9 +278,9 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     #pad.(decoder_characters,maxdecodercharacters)
     #decoder_characters = hcat(decoder_characters...)
 
-    encodervocab_pad_idx = d.srcvocab.token_to_idx["@@PADDING@@"]
-    decodervocab_pad_idx = d.tgtvocab.token_to_idx["@@PADDING@@"]
-    end_symbol_idx= d.tgtvocab.token_to_idx["@end@"]
+    encodervocab_pad_idx = amrvocab.srcvocab.token_to_idx["@@PADDING@@"]
+    decodervocab_pad_idx = amrvocab.tgtvocab.token_to_idx["@@PADDING@@"]
+    end_symbol_idx= amrvocab.tgtvocab.token_to_idx["@end@"]
 
 
     srctokens = encoder_tokens                                            # (B,Tx)
@@ -341,8 +300,8 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     edgelabels = head_tags                                               # (B, Ty-2)
 
     headpads= size(parsermask,2)-size(head_indices,2)
-    edgeheads = hcat(edgeheads, zeros(max_ind,headpads))
-    edgelabels = hcat(edgelabels, zeros(max_ind,headpads))
+    edgeheads = hcat(edgeheads, ones(max_ind,headpads))
+    edgelabels = hcat(edgelabels, ones(max_ind,headpads))
 
     deleteat!(new_state, 1:max_ind)
     return  ((src_pos_tags, tgt_pos_tags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) , new_state)

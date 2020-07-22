@@ -250,7 +250,7 @@ function amrgraph_getlistdata(amr; bos=nothing, eos=nothing, bert_tokenizer=noth
             push!(tgt_tokens,eos)
         end
 
-        head_indices[node_to_idx[amr.graph.variable_to_node[amr.graph.top]][1]] = 0 
+        head_indices[node_to_idx[amr.graph.variable_to_node[amr.graph.top]][1]] = 1 
 
         # Target side Coreference(Copy)
         tgt_copy_indices = []

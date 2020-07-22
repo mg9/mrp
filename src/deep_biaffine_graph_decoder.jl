@@ -41,46 +41,54 @@ function DeepBiaffineGraphDecoder(inputsize::Int, edgenodehiddensize::Int, edgel
 end
 
 
+
+
 function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabels)
-    Hy,B,Ty = size(hiddens,1), size(hiddens,2), size(hiddens,3)+1
+    Hy, B, num_nodes = size(hiddens)
+    parsermask = _atype(parsermask)
+    edgeheads  = _atype(edgeheads)
+    edgelabels = _atype(edgelabels)
 
-    ;@size parsermask (B, Ty-1); @size edgeheads (B, Ty-1);  @size edgelabels (B, Ty-1)
+    ;@size parsermask (B, num_nodes)
+    ;@size edgeheads  (B, num_nodes) 
+    ;@size edgelabels (B, num_nodes)
 
+    Ty = num_nodes+1
     dummy = convert(_atype, zeros(Hy,B,1))
     head_sentinel = g.head_sentinel .+ dummy   ;@size head_sentinel (Hy,B,1)
-
     hiddens = cat(head_sentinel, hiddens, dims=3)                                           ;@size hiddens (Hy,B,Ty)
-    if !isnothing(edgeheads); edgeheads = cat(zeros(B,1), edgeheads, dims=2); end           ;@size edgeheads  (B,Ty)
-    if !isnothing(edgelabels); edgelabels = cat(zeros(B,1), edgelabels, dims=2); end        ;@size edgelabels (B,Ty)
-    parsermask = cat(ones(B,1), parsermask, dims=2)                                         ;@size parsermask (B,Ty)
+
+    if !isnothing(edgeheads); edgeheads = cat(_atype(ones(B,1)), edgeheads, dims=2); end           ;@size edgeheads  (B,Ty)
+    if !isnothing(edgelabels); edgelabels = cat(_atype(ones(B,1)), edgelabels, dims=2); end        ;@size edgelabels (B,Ty)
+    parsermask = cat(_atype(ones(B,1)), parsermask, dims=2)                                         ;@size parsermask (B,Ty)
+    hiddens = permutedims(hiddens, [1,3,2]) ;@size hiddens (Hy,Ty,B)
+    hidden_rs = reshape(hiddens, :,Ty*B)
 
     ## Encode nodes
-    edgenode_h = elu.(g.edgenode_h_linear(reshape(hiddens, :,B*Ty)))        ;@size edgenode_h (edgenode_hiddensize, B*Ty)
-    edgenode_m = elu.(g.edgenode_m_linear(reshape(hiddens, :,B*Ty)))        ;@size edgenode_m (edgenode_hiddensize, B*Ty)
-    edgelabel_h = elu.(g.edgelabel_h_linear(reshape(hiddens, :,B*Ty)))      ;@size edgelabel_h (edgelabel_hiddensize, B*Ty)
-    edgelabel_m = elu.(g.edgelabel_m_linear(reshape(hiddens, :,B*Ty)))      ;@size edgelabel_m (edgelabel_hiddensize, B*Ty)
-    edgelabel_h = reshape(edgelabel_h,(:, B,Ty))                           
-    edgelabel_m = reshape(edgelabel_m,(:, B,Ty))                           
+    edgenode_h = elu.(g.edgenode_h_linear(hidden_rs))        ;@size edgenode_h (edgenode_hiddensize, Ty*B)
+    edgenode_h = permutedims(reshape(edgenode_h, :,Ty,B), [3,2,1]) # B, T, H
+    edgenode_m = elu.(g.edgenode_m_linear(hidden_rs))        ;@size edgenode_m (edgenode_hiddensize, Ty*B)
+    edgenode_m = permutedims(reshape(edgenode_m, :,Ty,B), [3,2,1]) # B, T, H
+
+    edgelabel_h = elu.(g.edgelabel_h_linear(hidden_rs))      ;@size edgelabel_h (edgelabel_hiddensize, Ty*B)
+    edgelabel_h = permutedims(reshape(edgelabel_h, :,Ty,B), [3,2,1]) # B, T, H
+    edgelabel_m = elu.(g.edgelabel_m_linear(hidden_rs))      ;@size edgelabel_m (edgelabel_hiddensize, Ty*B)
+    edgelabel_m = permutedims(reshape(edgelabel_m, :,Ty,B), [3,2,1]) # B, T, H
 
     ## Calculate edgeheads scores & loglikelihood
-    edgenode_scores = g.biaffine_attention(edgenode_h, edgenode_m, parsermask) ;@size edgenode_scores (Ty,Ty,B)
+    mask = parsermask
+    edgenode_scores = g.biaffine_attention(edgenode_h, edgenode_m, parsermask) ;@size edgenode_scores (B,1,Ty,Ty)
+    edgenode_scores = reshape(edgenode_scores, B,Ty,Ty) 
 
-    #TODO: Check that masked_softmax try again. For now it doesn't use masks during softmax calc.
-    tmpsoftmax_mask = (parsermask .== 1)'                       ;@size tmpsoftmax_mask (Ty,B)
-    tmpsoftmax_mask = tmpsoftmax_mask .+ 1e-45
-    tmpsoftmax_mask_row = _atype(reshape(tmpsoftmax_mask,1,Ty,B))   ;@size tmpsoftmax_mask_row (1, Ty,B)
-    tmpsoftmax_mask_col = _atype(reshape(tmpsoftmax_mask,Ty,1,B))   ;@size tmpsoftmax_mask_col (Ty, 1,B)
-    masked_scores = (edgenode_scores .* tmpsoftmax_mask_row)        ;@size masked_scores (Ty, Ty,B) 
-    masked_scores = (masked_scores .* tmpsoftmax_mask_col)        ;@size masked_scores (Ty, Ty,B) 
+    B, max_len, _ = size(edgenode_scores)
+    tmpsoftmax_mask = (parsermask .== 1)                      ;@size tmpsoftmax_mask (B,Ty)
+    mask_1= reshape(tmpsoftmax_mask, B,1,Ty)
+    mask_2= reshape(tmpsoftmax_mask, B,Ty,1)
+    full_mask = mask_1 .+ mask_2 .+ 1e-20
+    masked_scores = edgenode_scores .* full_mask
+    edgenode_ll = log.(softmax(masked_scores, dims=2))
 
-
-    edgenode_ll =  -log.(softmax(masked_scores, dims=2))        # TODO: scores for 0-masks is still ~0.11
-
-    ## Calculate edgelabels scores & loglikelihood
-    ;@size edgelabel_h (edgelabel_hiddensize, B, Ty) ;@size edgeheads  (B,Ty)
-    ;@size edgelabel_m (edgelabel_hiddensize,B,Ty)   ;@size edgelabels (B,Ty)
-    
-    # returns the node representations with given indices
+   # returns the node representations with given indices
     function getreps(ind, arr)
         # ind:(T,B), arr: (T,B,H) -> T,B,H
         results =[]
@@ -92,47 +100,45 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
        end
        return reshape(reshape(vcat(results...), h,t*b)', t,b,h) 
     end
-    edgeheads_inds  = Integer.(edgeheads)  .+1  #increase for indices 0
-    edgelabels_inds = Integer.(edgelabels) .+1  #increase for indices 0
-    edgelabel_h = permutedims(edgelabel_h, [3,2,1])                             ;@size edgelabel_h (Ty,B,edgelabel_hiddensize)
-    edgelabel_h = getreps(edgeheads_inds', edgelabel_h)                         ;@size edgelabel_h (Ty,B,edgelabel_hiddensize)
-    edgelabel_h = permutedims(edgelabel_h, [3,2,1])                             ;@size edgelabel_h (edgelabel_hiddensize,B,Ty)
-    edgelabel_scores = g.edgelabel_bilinear(edgelabel_h, edgelabel_m)           ;@size edgelabel_scores (B,Ty, num_edgelabels)
-    edgelabel_ll = -log.(softmax(edgelabel_scores, dims=3))
-    edgelabel_ll = permutedims(edgelabel_ll, [2,3,1])                           ;@size edgelabel_ll (Ty, num_edgelabels,B)
+
+    edgelabel_h = permutedims(edgelabel_h,[2,1,3])
+
+    #Mock dropout
+    edgeheads_inds  = convert(Array{Int32}, (edgeheads))    #increase for indices 0
+    edgelabels_inds =convert(Array{Int32}, (edgelabels))    #increase for indices 0
+    _edgelabel_h = getreps(edgeheads_inds', edgelabel_h)                                                    ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
+    _edgelabel_h = permutedims(_edgelabel_h, [3,2,1])                                                       ;@size _edgelabel_h (edgelabel_hiddensize,B,Ty)
+    edgelabel_scores = g.edgelabel_bilinear(_edgelabel_h, permutedims(edgelabel_m, [3,1,2]))                ;@size edgelabel_scores (B,Ty, num_edgelabels)
+    edgelabel_ll = log.(softmax(edgelabel_scores .+1e-20, dims=3)) .+1e-20 # B,Ty,num_tags
+
 
     ## Calculate edgeheads and edgelabel losses 
-    _edgeheads  = reshape(edgeheads_inds',  Ty,B)
-    _edgelabels = reshape(edgelabels_inds', Ty,B)
     edgeheadloss = edgelabelloss = 0.0
-    for t in 2:Ty # Exclude dummy root
-        for b in 1:B
-            xh = edgenode_ll[t,_edgeheads[t,b],b]
-            if isnan(xh) 
-                println("xh NAN at $t $b ", _edgeheads[t,b]) 
-            end
-            edgeheadloss +=xh
 
-            xl = edgelabel_ll[t,_edgelabels[t,b],b]
-            if isnan(xl) println("xh: $xl") end
-            edgelabelloss+=xl
+    for b in 1:B
+        for t in 2:max_len # Exclude dummy root
+            xh = edgenode_ll[b,edgeheads_inds[b,t],t]
+            #if isnan(xh) println("xh NAN at $t $b ", edgeheads_inds[b,t]) end
+            edgeheadloss += -xh
+                
+            xl = edgelabel_ll[b,t,edgelabels_inds[b,t]]
+            #if isnan(xl) println("xl NAN: $xl") end
+            edgelabelloss+= -xl
         end
     end
-   
-    ## Loss Calculation
+    ## Graphloss calculation
     graphloss = sum(edgeheadloss + edgelabelloss)
-
-
-
+    
     ## Greedy decoding for heads and labels
-    ;@size edgenode_scores (Ty,Ty,B) ;@size parsermask (B,Ty); ;@size edgelabel_scores (B,Ty,num_edgelabels)
+    edgenode_scores= permutedims(edgenode_scores, [3,2,1]) ;@size edgenode_scores (Ty,Ty,B)
+    ;@size parsermask (B,Ty); ;@size edgelabel_scores (B,Ty,num_edgelabels)
     diagonal(A::AbstractMatrix, k::Integer=0) = view(A, diagind(A, k)) # Set diagonal elements to -inf to prevent edge returns node itself (no loop)
     a = zeros(Ty,Ty); diagonal(a) .= -Inf
     a = reshape(a, (Ty,Ty,1))
     _edgenode_scores = edgenode_scores .+ convert(_atype,a)             ;@size _edgenode_scores (Ty,Ty,B)                       
     minus_mask = 1 .- parsermask
-    settoinf(x) = x==1.0 ? x= -Inf : x=x                                               
-    minus_mask = settoinf.(minus_mask)'                                 ;@size minus_mask (Ty,B)
+    settoinf(x) = x==1.0 ? x= -1e8 : x=x                                               
+    minus_mask = settoinf.(Array(minus_mask))'                                 ;@size minus_mask (Ty,B)
     minus_mask = reshape(minus_mask, (1,Ty,B))                                         
     _edgenode_scores = _edgenode_scores .+ _atype(minus_mask)           ;@size _edgenode_scores (Ty,Ty,B)               
     minus_mask = reshape(minus_mask, (Ty,1,B))                                         
@@ -142,17 +148,23 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     ina(x) = return x[2]     # remove cartesian type 
     pred_edgeheads = argmax(value(_edgenode_scores), dims=2)  
     pred_edgeheads = reshape(ina.(pred_edgeheads), (Ty,B))'             ;@size pred_edgeheads (B,Ty)
+    
 
     ## Predictions of edge_labels
+    pred_edgeheads_inds  = convert(Array{Int32}, (pred_edgeheads))'
+    _edgelabel_h = getreps(pred_edgeheads_inds, edgelabel_h)                                            ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
+    _edgelabel_h = permutedims(_edgelabel_h, [3,2,1])                                                           ;@size _edgelabel_h (edgelabel_hiddensize,B,Ty)
+    _edgelabel_scores = g.edgelabel_bilinear(_edgelabel_h, permutedims(edgelabel_m, [3,1,2]))                ;@size edgelabel_scores (B,Ty, num_edgelabels)
     inpa(x) = return x[3]     # remove cartesian type 
-    pred_edgelabels = argmax(value(edgelabel_scores), dims=3)           ;@size pred_edgelabels (B,Ty,1)
+    pred_edgelabels = argmax(value(_edgelabel_scores), dims=3)           ;@size pred_edgelabels (B,Ty,1)
     pred_edgelabels = reshape(inpa.(pred_edgelabels), (B,Ty))           ;@size pred_edgelabels (B,Ty)
 
+
     ## Graph Decoder Metrics
-    ;@size _edgeheads (Ty,B) ;@size _edgelabels (Ty,B) ;@size parsermask (B,Ty) ;@size pred_edgeheads (B,Ty) ;@size pred_edgelabels (B,Ty)
+    ;@size edgeheads_inds (B,Ty) ;@size edgelabels_inds (B,Ty) ;@size parsermask (B,Ty) ;@size pred_edgeheads (B,Ty) ;@size pred_edgelabels (B,Ty)
     # Exclude dummy root 
-    _edgeheads = _edgeheads'[:,2:end]               ;@size _edgeheads (B,Ty-1)
-    _edgelabels = _edgelabels'[:,2:end]             ;@size _edgelabels (B,Ty-1)
+    _edgeheads = edgeheads_inds[:,2:end]               ;@size _edgeheads (B,Ty-1)
+    _edgelabels = edgelabels_inds[:,2:end]             ;@size _edgelabels (B,Ty-1)
     _parsermask = parsermask[:,2:end]               ;@size _parsermask (B,Ty-1)
     _pred_edgeheads = pred_edgeheads[:,2:end]       ;@size _pred_edgeheads (B,Ty-1)
     _pred_edgelabels = pred_edgelabels[:,2:end]     ;@size _pred_edgelabels (B,Ty-1)
@@ -160,6 +172,8 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
 
     return graphloss
 end
+
+
 
 
 # TODO: test this function

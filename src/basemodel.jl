@@ -62,12 +62,10 @@ function (m::BaseModel)(srcpostags, tgtpostags, corefs, srctokens, tgttokens, sr
             tgtattentions = vcat(tgtattentions, _atype(pad))
         end
         @size tgtattentions (Ty,1,B);
-        pgeneratorloss += m.p(srcattnvector, srcattentions, tgtattentions, srcattentionmaps, tgtattentionmaps,  generatetargets[t:t,:], srccopytargets[t:t,:] , tgtcopytargets[t:t,:], decodervocab_pad_idx, coverage)[1]
-        sumloss += pgeneratorloss
-
+        sumloss += m.p(srcattnvector, srcattentions, tgtattentions, srcattentionmaps, tgtattentionmaps,  generatetargets[t:t,:], srccopytargets[t:t,:] , tgtcopytargets[t:t,:], decodervocab_pad_idx, coverage)
     end
     hiddens = cat(hiddens...,dims=3) ;@size hiddens (Hy,B,Ty-1)
-    sumloss += graphloss
     graphloss = m.g(hiddens, parsermask, edgeheads, edgelabels)
-    return  sumloss, pgeneratorloss , graphloss
+    sumloss += graphloss
+    return  sumloss
 end

@@ -28,13 +28,13 @@ function (gm::GraphMetrics)(pred_edgeheads, pred_edgelabels, gold_edgeheads, gol
     #TODO: other metrics s.t. unlabeled exact match, labeled exact match etc., move metrics part into a function
     #TODO: ignore label class mask?
     
-    correct_indices = (pred_edgeheads .== gold_edgeheads)  .*  (1 .- parsermask)   
-    correct_labels = (pred_edgelabels .== gold_edgelabels) .*  (1  .- parsermask)    
+    correct_indices = _atype((pred_edgeheads .== gold_edgeheads))  .*  parsermask 
+    correct_labels = _atype((pred_edgelabels .== gold_edgelabels)) .* parsermask  
     correct_labels_and_indices = correct_indices .* correct_labels             
     gm.unlabeled_correct += sum(correct_indices)               
     gm.labeled_correct += sum(correct_labels_and_indices)
     gm.total_sentences += size(pred_edgeheads,1)
-    gm.total_words +=  sum(1 .- parsermask)
+    gm.total_words +=  sum(parsermask)
     gm.total_loss += graphloss
     gm.total_edgenode_loss += edgeheadloss
     gm.total_edgelabel_loss += edgelabelloss
@@ -60,17 +60,21 @@ function (pm::PointerGeneratorMetrics)(predictions, targets, non_pad_mask, non_t
 end
 
 function calculate_graphdecoder_metrics(gm::GraphMetrics)
+    UAS = LAS = EL = 0
+
     if gm.total_words > 0
         unlabeled_attachment_score = float(gm.unlabeled_correct) / float(gm.total_words)
         labeled_attachment_score = float(gm.labeled_correct) / float(gm.total_words)
         edgeloss = float(gm.total_loss) / float(gm.total_words)
         edgenode_loss = float(gm.total_edgenode_loss) / float(gm.total_words)
         edgelabel_loss = float(gm.total_edgelabel_loss) / float(gm.total_words)
+   
+        UAS = unlabeled_attachment_score
+        LAS = labeled_attachment_score
+        EL  = value(edgeloss)
     end
 
-    UAS = unlabeled_attachment_score
-    LAS = labeled_attachment_score
-    EL  = value(edgeloss)
+    
     return UAS, LAS, EL
 end
 

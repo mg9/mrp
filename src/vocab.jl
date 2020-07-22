@@ -10,6 +10,37 @@ mutable struct Vocab
     vocabsize
 end
 
+mutable struct AMRVocab
+    srcvocab::Vocab
+    srccharactervocab::Vocab
+    srcpostagvocab::Vocab
+    srcmustcopytagsvocab::Vocab
+    srccopyindicesvocab::Vocab
+    tgtvocab::Vocab
+    tgtcharactervocab::Vocab
+    tgtpostagvocab::Vocab
+    tgtcopymaskvocab::Vocab
+    tgtcopyindicesvocab::Vocab
+    headtagsvocab::Vocab
+    headindicesvocab::Vocab
+end
+
+function AMRVocab()
+    srcvocab = Vocab([])
+    srccharactervocab = Vocab([])
+    srcpostagvocab = Vocab([])
+    srcmustcopytagsvocab = Vocab([])
+    srccopyindicesvocab = Vocab([])
+    tgtvocab = Vocab([])
+    tgtcharactervocab = Vocab([])
+    tgtpostagvocab = Vocab([])
+    tgtcopymaskvocab = Vocab([])
+    tgtcopyindicesvocab = Vocab([])
+    headtagsvocab = Vocab([])
+    headindicesvocab = Vocab([])
+    return AMRVocab(srcvocab, srccharactervocab, srcpostagvocab, srcmustcopytagsvocab, srccopyindicesvocab, tgtvocab, tgtcharactervocab, tgtpostagvocab, tgtcopymaskvocab, tgtcopyindicesvocab, headtagsvocab, headindicesvocab)
+end
+
 
 function Vocab(srctokens)
     token_to_idx = Dict()
