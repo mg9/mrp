@@ -9,12 +9,16 @@ using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random, CuArrays, IterT
 TOKEN_EMB_DIM = 300 #glove
 POS_EMB_DIM = 100
 COREF_EMB_DIM = 50
+CHARCNN_EMB_DIM = 100 # The CharCNN output size, this is equal to length(Ngram_sizes) * Num_Filters
+CHARCNN_EMB_SIZE = 100 # This is for the internal character embedding size
+CHARCNN_NUM_FILTERS = 100
+CHARCNN_NGRAM_SIZES = [3]
 ENCODER_VOCAB_SIZE = 12202
 DECODER_VOCAB_SIZE = 18002
 POSTAG_VOCAB_SIZE = 52
 DECODER_COREF_VOCAB_SIZE = 500
-Ex = TOKEN_EMB_DIM  + POS_EMB_DIM
-Ey = TOKEN_EMB_DIM + POS_EMB_DIM + COREF_EMB_DIM
+Ex = TOKEN_EMB_DIM + POS_EMB_DIM + CHARCNN_EMB_DIM
+Ey = TOKEN_EMB_DIM + POS_EMB_DIM + CHARCNN_EMB_DIM + COREF_EMB_DIM 
 H, L, Pdrop = 512, 2, 0.33
 edgenode_hiddensize = 256
 edgelabel_hiddensize = 128
@@ -108,7 +112,7 @@ function initopt!(model::BaseModel, optimizer="Adam()")
     end
 end
 
-m = BaseModel(H,Ex,Ey,L, DECODER_VOCAB_SIZE, edgenode_hiddensize, edgelabel_hiddensize, num_edgelabels; bidirectional=true, dropout=Pdrop)
+m = BaseModel(H,Ex,Ey,L, DECODER_VOCAB_SIZE, edgenode_hiddensize, edgelabel_hiddensize, num_edgelabels, amrvocab.srcvocab, amrvocab.srccharactervocab, amrvocab.tgtvocab, amrvocab.tgtcharactervocab; bidirectional=true, dropout=Pdrop)
 initopt!(m)
 train(m, epochs) 
 

@@ -2,6 +2,7 @@ using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random, CuArrays, IterT
 
 include("debug.jl")
 include("embed.jl")
+include("charcnn.jl")
 
 _usegpu = gpu()>=0
 _atype = ifelse(_usegpu, KnetArray{Float32}, Array{Float64})
@@ -20,12 +21,14 @@ struct Attention; wquery; wattn; scale; end
 struct S2S
     srctokenembed::Embed        # encinput(B,Tx) -> srcembed(Ex,B,Tx)
     srcpostagembed::Embed
+    srccharcnnembed::CharCNNEncoder # encinput(B,Tx) -> srccharembed(Cx, B, Tx)
     encoder::RNN                
     srcmemory::Memory      
     tgtmemory::Memory           
     tgttokenembed::Embed       
     tgtpostagembed::Embed   
-    tgtcorefembed::Embed    
+    tgtcorefembed::Embed
+    tgtcharcnnembed::CharCNNEncoder    
     decoder::RNN               
     srcattention::Attention  
     tgtattention::Attention     
@@ -50,14 +53,16 @@ end
 # * The attention parameter `scale` is used to scale the attention scores before softmax, set it to a parameter of size 1.
 # * The attention parameter `wattn` is used to transform the concatenation of the decoder output and the context vector to the attention vector. It should be a parameter of size `(hidden,2*hidden)` if unidirectional, `(hidden,3*hidden)` if bidirectional.
 
-function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=false, dropout=0)
+function S2S(hidden::Int, srcembsz::Int, srcvocab::Vocab, srccharvocab::Vocab, tgtembsz::Int, tgtvocab::Vocab, tgtcharvocab::Vocab; layers=1, bidirectional=false, dropout=0)
     @assert !bidirectional || iseven(layers) "layers should be even for bidirectional models"
     srctokenembed  = Embed(ENCODER_VOCAB_SIZE, TOKEN_EMB_DIM)
     srcpostagembed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
+    srccharcnnembed = CharCNNEncoder(CHARCNN_EMB_SIZE, CHARCNN_NUM_FILTERS, srcvocab, srccharvocab,CHARCNN_NGRAM_SIZES)
 
     tgttokenembed  = Embed(DECODER_VOCAB_SIZE, TOKEN_EMB_DIM)
     tgtpostagembed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
     tgtcorefembed  = Embed(DECODER_COREF_VOCAB_SIZE, COREF_EMB_DIM)
+    tgtcharcnnembed = CharCNNEncoder(CHARCNN_EMB_SIZE, CHARCNN_NUM_FILTERS, tgtvocab, tgtcharvocab,CHARCNN_NGRAM_SIZES)
 
     encoderlayers = (bidirectional ? layers ÷ 2 : layers)
     encoder = RNN(srcembsz, hidden; dropout=dropout, numLayers=encoderlayers, bidirectional=bidirectional)
@@ -77,7 +82,7 @@ function S2S(hidden::Int, srcembsz::Int, tgtembsz::Int; layers=1, bidirectional=
     srcattn = Attention(wquery, srcwattn, srcscale)
     tgtattn = Attention(wquery, tgtwattn, tgtscale)
 
-    S2S(srctokenembed, srcpostagembed, encoder, srcmemory, tgtmemory, tgttokenembed, tgtpostagembed, tgtcorefembed, decoder, srcattn, tgtattn, dropout) 
+    S2S(srctokenembed, srcpostagembed, srccharcnnembed, encoder, srcmemory, tgtmemory, tgttokenembed, tgtpostagembed, tgtcorefembed, tgtcharcnnembed, decoder, srcattn, tgtattn, dropout) 
 end
 
 
@@ -120,7 +125,7 @@ mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, s
 
 function encode(s::S2S, tokens, srcpostags) 
     s.encoder.h, s.encoder.c = 0, 0    #; @sizes(s); (B,Tx) = size(tokens)
-    z = cat(s.srcpostagembed(srcpostags), s.srctokenembed(tokens),dims=1)
+    z = cat(s.srcpostagembed(srcpostags), s.srctokenembed(tokens), s.srccharcnnembed(tokens),dims=1)
     z = s.encoder(z)                   #; @size z (Hx*Dx,B,Tx)
     s.decoder.h = s.encoder.h          #; @size s.encoder.h (Hy,B,s.decoder.numLayers)
     s.decoder.c = s.encoder.c          #; @size s.encoder.c (Hy,B,s.decoder.numLayers)
@@ -202,7 +207,8 @@ function decode(s::S2S, tokens, tgtpostags, corefs, srcmem, prev, t, prevkeys, p
 
     z = cat(s.tgttokenembed(tokens), 
             s.tgtpostagembed(tgtpostags),
-            s.tgtcorefembed(corefs),dims=1)   #; (B,Ty) = size(tokens); @sizes(s); @size z (Ey,B,Ty)
+            s.tgtcorefembed(corefs),
+            s.srccharcnnembed(tokens),dims=1)   #; (B,Ty) = size(tokens); @sizes(s); @size z (Ey,B,Ty)
     z = vcat(z, prev)                                                       #; @size z (Ey+Hy,B,1)
     z = s.decoder(z)                                                        #; @size z (Hy,B,1)
     srcattnvector, srcalignments = s.srcattention(z, srcmem)                #; @size srcattnvector (Hy,B,1); @size srcalignments (Tx,1,B)

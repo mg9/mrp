@@ -23,8 +23,8 @@ end
 # * `edgenode_hiddensize`: number of edgenode_hiddensize;  transform representations into a space for edge node heads and edge node modifiers
 # * `edgelabel_hiddensize`: number of edgelabel_hiddensize; transform representations into a space for edge label heads and edge label modifiers
 # * `num_labels`: number of head tags
-function BaseModel(H, Ex, Ey, L, vocabsize, edgenode_hidden_size, edgelabel_hidden_size, num_labels; bidirectional=true, dropout=0)
-    s = S2S(H,Ex,Ey; layers=L, bidirectional=bidirectional, dropout=Pdrop)
+function BaseModel(H, Ex, Ey, L, vocabsize, edgenode_hidden_size, edgelabel_hidden_size, num_labels, srcvocab, srccharvocab, tgtvocab, tgtcharvocab; bidirectional=true, dropout=0)
+    s = S2S(H,Ex,srcvocab,srccharvocab,Ey,tgtvocab,tgtcharvocab; layers=L, bidirectional=bidirectional, dropout=Pdrop)
     p = PointerGenerator(H, vocabsize)
     g = DeepBiaffineGraphDecoder(H, edgenode_hidden_size, edgelabel_hidden_size, num_labels)
     BaseModel(s, p, g)
