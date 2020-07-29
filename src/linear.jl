@@ -10,5 +10,7 @@ function (l::Linear)(x)
     l.w * x .+ l.b
 end
 
+#=
 projection = Linear(10, 20)
 @test size(projection.w) == (20,10)
+=#

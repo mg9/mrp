@@ -101,7 +101,7 @@ function slowBilinear(bl::BiLinear, input_left, input_right)
     out
 end
 
-
+#=
 @testset "Testing Bilinear Layer" begin
     HL, HR, O, B, T = 6, 6, 10, 26, 15
     bl = BiLinear(randn(HL, O, HR), randn(O, HL), randn(O, HR), randn(O))
@@ -115,3 +115,4 @@ end
     bl = BiLinear(HL, HR, O)
     @test bl(inp1, inp2) ≈ slowBilinear(bl, inp1, inp2) 
 end
+=#

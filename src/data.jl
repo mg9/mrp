@@ -19,6 +19,25 @@ mutable struct AMRDataset
 end
 
 
+mutable struct AMRBatch
+    srcpostags
+    tgtpostags
+    corefs
+    srctokens
+    tgttokens
+    srcattentionmaps
+    tgtattentionmaps
+    generatetargets
+    srccopytargets
+    tgtcopytargets
+    parsermask
+    edgeheads
+    edgelabels
+    encodervocab_pad_idx
+    decodervocab_pad_idx
+end
+
+
 function AMRDataset(file::String, amrvocab::AMRVocab, batchsize; shuffled=false, word_splitter=nothing, sort_by="tgttokens", evaluation=false, init_vocab=false)
     word_splitter= nothing #TODO: nothing until BERT time 
     number_bert_ids = 0
@@ -34,7 +53,7 @@ function AMRDataset(file::String, amrvocab::AMRVocab, batchsize; shuffled=false,
     end
 
     amrinstances = []
-    for amr in amrs[1:min(length(amrs),500)]
+    for amr in amrs[1:min(length(amrs),40000)]
         amrgraph_buildextras(amr.graph)
         max_tgt_length = Any
         if evaluation; max_tgt_length = nothing
@@ -99,10 +118,9 @@ function AMRDataset(file::String, amrvocab::AMRVocab, batchsize; shuffled=false,
         instance["src_copy_map"]  = srccopymap
         push!(amrinstances, instance)
     end
-    AMRDataset(amrinstances, length(amrinstances), batchsize, shuffled, word_splitter,  number_bert_ids, number_bert_oov_ids,  number_non_oov_pos_tags, number_pos_tags)
+    _amrinstances = sort(collect(amrinstances),by=x->length(x["decoder_tokens"]), rev=false)
+    AMRDataset(_amrinstances, length(amrinstances), batchsize, shuffled, word_splitter,  number_bert_ids, number_bert_oov_ids,  number_non_oov_pos_tags, number_pos_tags)
 end
-
-
 
 
 function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances), collect(1:d.ninstances)))
@@ -135,10 +153,10 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
 
     for instance in amrs_instances
         push!(head_tags, instance["head_tags"])
-        push!(tgt_copy_mask, instance["tgt_copy_mask"])
+        push!(tgt_copy_mask,  instance["tgt_copy_mask"])
         push!(encoder_tokens, instance["encoder_tokens"])
-        push!(tgt_copy_map, instance["tgt_copy_map"])
-        push!(src_token_ids, instance["src_token_ids"])
+        push!(tgt_copy_map,   instance["tgt_copy_map"])
+        push!(src_token_ids,  instance["src_token_ids"])
         push!(src_token_subword_index, instance["src_token_subword_index"])
         push!(decoder_characters, instance["decoder_characters"])
         push!(tgt_pos_tags, instance["tgt_pos_tags"])
@@ -153,19 +171,19 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     end
 
     function pad_one_right(x, maxlength)
-        append!(x, ones(maxlength-length(x)))
+        cat(x, ones(maxlength-length(x)),dims=1)
      end
 
     function pad_one_left(x, maxlength)
-        append!(ones(maxlength-length(x)), x)
+        cat(ones(maxlength-length(x)),x, dims=1)
      end
 
     function pad_zero_right(x, maxlength)
-        append!(x, zeros(maxlength-length(x)))
+        cat(x, zeros(maxlength-length(x)),dims=1)
     end
 
     function pad_zero_left(x, maxlength)
-        append!(zeros(maxlength-length(x)), x)
+        cat(zeros(maxlength-length(x)),x, dims=1)
     end
 
     function pad2d_srcmap(x, maxrow, maxcol) # with leftwise padding
@@ -181,7 +199,7 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
 
 
     maxencodertokens= maximum(length.(encoder_tokens))
-    encoder_tokens = pad_one_left.(encoder_tokens,maxencodertokens)
+    encoder_tokens = pad_one_right.(encoder_tokens,maxencodertokens)
     encoder_tokens = hcat(encoder_tokens...)
     encoder_tokens = Integer.(encoder_tokens)' # B, Tx
 
@@ -244,13 +262,13 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     maxheadtags= maximum(length.(head_tags))
     head_tags = pad_one_right.(head_tags,maxheadtags)
     head_tags = hcat(head_tags...)
-    head_tags = Integer.(head_tags)'  #(B,Ty-2)
+    head_tags = Integer.(head_tags')  #(B,Ty-2)
 
     
     maxheadindices = maximum(length.(head_indices))  ## Check that part again.
     head_indices = pad_one_right.(head_indices, maxheadindices)
     head_indices = hcat(head_indices...)
-    head_indices = Integer.(head_indices)' #(B,Ty-2)
+    head_indices = Integer.(head_indices') #(B,Ty-2)
 
 
 
@@ -299,18 +317,43 @@ function iterate(d::AMRDataset, state=ifelse(d.shuffled, randperm(d.ninstances),
     edgeheads  = head_indices                                            # (B, Ty-2)
     edgelabels = head_tags                                               # (B, Ty-2)
 
-    headpads= size(parsermask,2)-size(head_indices,2)
-    edgeheads = hcat(edgeheads, ones(max_ind,headpads))
-    edgelabels = hcat(edgelabels, ones(max_ind,headpads))
+    #headpads= size(parsermask,2)-size(head_indices,2)
+    #edgeheads = hcat(edgeheads, zeros(max_ind,headpads))
+    #edgelabels = hcat(edgelabels, zeros(max_ind,headpads))
 
+    batch = AMRBatch(src_pos_tags, tgt_pos_tags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx)
     deleteat!(new_state, 1:max_ind)
-    return  ((src_pos_tags, tgt_pos_tags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) , new_state)
+    
+    return  (batch, new_state)
+    #return  ((src_pos_tags, tgt_pos_tags, corefs, srctokens, tgttokens, srcattentionmaps, tgtattentionmaps, generatetargets, srccopytargets, tgtcopytargets, parsermask, edgeheads, edgelabels, encodervocab_pad_idx, decodervocab_pad_idx) , new_state)
 end
 
 
 function length(d::AMRDataset)
     d, r = divrem(d.ninstances, d.batchsize)
     return r == 0 ? d : d+1
+end
+
+function length(b::AMRBatch)
+    return 1
+end
+
+function iterate(b::AMRBatch)
+    return (b.srcpostags,
+    b.tgtpostags,
+    b.corefs,
+    b.srctokens,
+    b.tgttokens,
+    b.srcattentionmaps,
+    b.tgtattentionmaps,
+    b.generatetargets,
+    b.srccopytargets,
+    b.tgtcopytargets,
+    b.parsermask,
+    b.edgeheads,
+    b.edgelabels,
+    b.encodervocab_pad_idx,
+    b.decodervocab_pad_idx)
 end
 
 

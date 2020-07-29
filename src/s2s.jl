@@ -1,4 +1,4 @@
-using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random, CuArrays, IterTools
+using Knet, Test, Base.Iterators,  LinearAlgebra, Random, IterTools
 
 include("debug.jl")
 include("embed.jl")
@@ -21,14 +21,14 @@ struct Attention; wquery; wattn; scale; end
 struct S2S
     srctokenembed::Embed        # encinput(B,Tx) -> srcembed(Ex,B,Tx)
     srcpostagembed::Embed
-    srccharcnnembed::CharCNNEncoder # encinput(B,Tx) -> srccharembed(Cx, B, Tx)
+    #srccharcnnembed::CharCNNEncoder # encinput(B,Tx) -> srccharembed(Cx, B, Tx)
     encoder::RNN                
     srcmemory::Memory      
     tgtmemory::Memory           
     tgttokenembed::Embed       
     tgtpostagembed::Embed   
     tgtcorefembed::Embed
-    tgtcharcnnembed::CharCNNEncoder    
+    #tgtcharcnnembed::CharCNNEncoder    
     decoder::RNN               
     srcattention::Attention  
     tgtattention::Attention     
@@ -57,12 +57,12 @@ function S2S(hidden::Int, srcembsz::Int, srcvocab::Vocab, srccharvocab::Vocab, t
     @assert !bidirectional || iseven(layers) "layers should be even for bidirectional models"
     srctokenembed  = Embed(ENCODER_VOCAB_SIZE, TOKEN_EMB_DIM)
     srcpostagembed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
-    srccharcnnembed = CharCNNEncoder(CHARCNN_EMB_SIZE, CHARCNN_NUM_FILTERS, srcvocab, srccharvocab,CHARCNN_NGRAM_SIZES)
+    #srccharcnnembed = CharCNNEncoder(CHARCNN_EMB_SIZE, CHARCNN_NUM_FILTERS, srcvocab, srccharvocab,CHARCNN_NGRAM_SIZES) 
 
     tgttokenembed  = Embed(DECODER_VOCAB_SIZE, TOKEN_EMB_DIM)
     tgtpostagembed = Embed(POSTAG_VOCAB_SIZE, POS_EMB_DIM)
     tgtcorefembed  = Embed(DECODER_COREF_VOCAB_SIZE, COREF_EMB_DIM)
-    tgtcharcnnembed = CharCNNEncoder(CHARCNN_EMB_SIZE, CHARCNN_NUM_FILTERS, tgtvocab, tgtcharvocab,CHARCNN_NGRAM_SIZES)
+    #tgtcharcnnembed = CharCNNEncoder(CHARCNN_EMB_SIZE, CHARCNN_NUM_FILTERS, tgtvocab, tgtcharvocab,CHARCNN_NGRAM_SIZES)
 
     encoderlayers = (bidirectional ? layers ÷ 2 : layers)
     encoder = RNN(srcembsz, hidden; dropout=dropout, numLayers=encoderlayers, bidirectional=bidirectional)
@@ -77,12 +77,13 @@ function S2S(hidden::Int, srcembsz::Int, srcvocab::Vocab, srccharvocab::Vocab, t
     tgtscale = param(1)
    
     srcwattn = bidirectional ? param(hidden,3hidden) : param(hidden,2hidden)
-    tgtwattn = param(hidden,3hidden)
+    tgtwattn = value(param(hidden,2hidden)) # a dummy assignment, we don't need target attnvector, and so tgt wattn matrix
 
     srcattn = Attention(wquery, srcwattn, srcscale)
     tgtattn = Attention(wquery, tgtwattn, tgtscale)
 
-    S2S(srctokenembed, srcpostagembed, srccharcnnembed, encoder, srcmemory, tgtmemory, tgttokenembed, tgtpostagembed, tgtcorefembed, tgtcharcnnembed, decoder, srcattn, tgtattn, dropout) 
+    S2S(srctokenembed, srcpostagembed,  encoder, srcmemory, tgtmemory, tgttokenembed, tgtpostagembed, tgtcorefembed,  decoder, srcattn, tgtattn, dropout) 
+    #S2S(srctokenembed, srcpostagembed, srccharcnnembed, encoder, srcmemory, tgtmemory, tgttokenembed, tgtpostagembed, tgtcorefembed, tgtcharcnnembed, decoder, srcattn, tgtattn, dropout) 
 end
 
 
@@ -125,7 +126,7 @@ mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, s
 
 function encode(s::S2S, tokens, srcpostags) 
     s.encoder.h, s.encoder.c = 0, 0    #; @sizes(s); (B,Tx) = size(tokens)
-    z = cat(s.srcpostagembed(srcpostags), s.srctokenembed(tokens), s.srccharcnnembed(tokens),dims=1)
+    z = cat(s.srcpostagembed(srcpostags), s.srctokenembed(tokens),dims=1) #s.srccharcnnembed(tokens),dims=1)
     z = s.encoder(z)                   #; @size z (Hx*Dx,B,Tx)
     s.decoder.h = s.encoder.h          #; @size s.encoder.h (Hy,B,s.decoder.numLayers)
     s.decoder.c = s.encoder.c          #; @size s.encoder.c (Hy,B,s.decoder.numLayers)
@@ -154,7 +155,8 @@ end
 # Note: the paper mentions a final `tanh` transform, however the final version of the
 # reference code does not use `tanh` and gets better results. Therefore we will skip `tanh`.
 
-function (a::Attention)(cell, mem; tgt=false, t=nothing, srcattnvector=nothing)
+
+function (a::Attention)(cell, mem; tgt=false, t=nothing)
     ## (Hy,B,Ty/1), ((Hy,Tx,B), (Hx*Dx,Tx,B)) -> (Hy,B,Ty/1)
     mmul(w,x) = (w == 1 ? x : w == 0 ? 0 : reshape(w * reshape(x,size(x,1),:), (:, size(x)[2:end]...)))
     qtrans(q) = (size(q,3)==1 ? reshape(q,(1,size(q,1),:)) : permutedims(q,(3,1,2)))
@@ -177,19 +179,12 @@ function (a::Attention)(cell, mem; tgt=false, t=nothing, srcattnvector=nothing)
     alignments = atrans(alignments)          #; @size alignments (Tx,Ty,B)
     context = bmm(vals, alignments)          #; @size context (HxDx,Ty,B)
     context = ctrans(context)                #; @size context (HxDx,B,Ty)
-
-    if !isnothing(srcattnvector)
-        attnvec = mmul(a.wattn, vcat(cell,context, srcattnvector)) #; @size attnvec (Hy,B,Ty)
-    else
-        attnvec = mmul(a.wattn, vcat(cell,context)) 
-    end
+    attnvec = mmul(a.wattn, vcat(cell,context)) #; @size attnvec (Hy,B,Ty)
     return attnvec, alignments
     ## return tanh.(attnvec)
     ## doc says tanh, implementation does not have it, no tanh does better:
     ## https://github.com/tensorflow/nmt/issues/57
 end
-
-
 
 
 
@@ -207,8 +202,8 @@ function decode(s::S2S, tokens, tgtpostags, corefs, srcmem, prev, t, prevkeys, p
 
     z = cat(s.tgttokenembed(tokens), 
             s.tgtpostagembed(tgtpostags),
-            s.tgtcorefembed(corefs),
-            s.srccharcnnembed(tokens),dims=1)   #; (B,Ty) = size(tokens); @sizes(s); @size z (Ey,B,Ty)
+            s.tgtcorefembed(corefs),dims=1)
+            #s.srccharcnnembed(tokens),dims=1)   #; (B,Ty) = size(tokens); @sizes(s); @size z (Ey,B,Ty)
     z = vcat(z, prev)                                                       #; @size z (Ey+Hy,B,1)
     z = s.decoder(z)                                                        #; @size z (Hy,B,1)
     srcattnvector, srcalignments = s.srcattention(z, srcmem)                #; @size srcattnvector (Hy,B,1); @size srcalignments (Tx,1,B)
@@ -219,7 +214,6 @@ function decode(s::S2S, tokens, tgtpostags, corefs, srcmem, prev, t, prevkeys, p
         vals = cat(prevvals, vals, dims=2)
     end
     tgtmem=(keys,vals)
-    tgtattnvector, tgtalignments = s.tgtattention(z, tgtmem, tgt=true, t=t, srcattnvector=srcattnvector)                #; @size srcattnvector (Hy,B,1); @size srcalignments (Tx,1,B)
+    tgtattnvector, tgtalignments = s.tgtattention(z, tgtmem, tgt=true, t=t)              
     return z, srcattnvector, srcalignments, tgtattnvector, tgtalignments,  keys, vals
 end
-

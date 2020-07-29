@@ -1,5 +1,6 @@
 macro size(z, s); esc(:(@assert (size($z) == $s) string(summary($z),!=,$s))); end
 
+#=
 macro sizes(s); quote
     Ex = size(s.srcembed.w,1)
     Vx = size(s.srcembed.w,2)
@@ -12,3 +13,4 @@ macro sizes(s); quote
     Ly = Int(s.decoder.numLayers)
     @assert Hx == Hy && Ly == Lx*Dx
 end |> esc; end
+=#

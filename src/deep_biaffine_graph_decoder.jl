@@ -3,6 +3,7 @@ include("biaffine_attention.jl")
 include("bilinear.jl")
 include("maximum_spanning_tree.jl")
 include("metrics.jl")
+using Statistics
 
 _usegpu = gpu()>=0
 _atype = ifelse(_usegpu, KnetArray{Float32}, Array{Float64})
@@ -51,14 +52,14 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     ;@size edgeheads  (B, num_nodes) 
     ;@size edgelabels (B, num_nodes)
 
+    ## Add dummy root at the beginning of sequence
     Ty = num_nodes+1
     dummy = convert(_atype, zeros(Hy,B,1))
     head_sentinel = g.head_sentinel .+ dummy   ;@size head_sentinel (Hy,B,1)
-    hiddens = cat(head_sentinel, hiddens, dims=3)                                               ;@size hiddens (Hy,B,Ty)
-
-    if !isnothing(edgeheads); edgeheads = cat(_atype(ones(B,1)), edgeheads, dims=2); end        ;@size edgeheads  (B,Ty)
-    if !isnothing(edgelabels); edgelabels = cat(_atype(ones(B,1)), edgelabels, dims=2); end     ;@size edgelabels (B,Ty)
-    parsermask = cat(_atype(ones(B,1)), parsermask, dims=2)                                     ;@size parsermask (B,Ty)
+    hiddens = cat(head_sentinel, hiddens, dims=3)                                                ;@size hiddens (Hy,B,Ty)
+    if !isnothing(edgeheads); edgeheads = cat(_atype(zeros(B,1)), edgeheads, dims=2); end        ;@size edgeheads  (B,Ty)
+    if !isnothing(edgelabels); edgelabels = cat(_atype(zeros(B,1)), edgelabels, dims=2); end     ;@size edgelabels (B,Ty)
+    parsermask = cat(_atype(ones(B,1)), parsermask, dims=2)                                      ;@size parsermask (B,Ty)
     hiddens = permutedims(hiddens, [1,3,2]) ;@size hiddens (Hy,Ty,B)
     hidden_rs = reshape(hiddens, :,Ty*B)
 
@@ -72,58 +73,26 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     edgelabel_h = permutedims(reshape(edgelabel_h, :,Ty,B), [3,2,1]) # B, T, H
     edgelabel_m = elu.(g.edgelabel_m_linear(hidden_rs))      ;@size edgelabel_m (edgelabel_hiddensize, Ty*B)
     edgelabel_m = permutedims(reshape(edgelabel_m, :,Ty,B), [3,2,1]) # B, T, H
+    #TODO: dropout the encoded nodes
 
-    ## Calculate edgeheads scores & loglikelihood
-    mask = parsermask
+    ## Calculate edgeheads scores & loss
     edgenode_scores = g.biaffine_attention(edgenode_h, edgenode_m, parsermask) ;@size edgenode_scores (B,1,Ty,Ty)
     edgenode_scores = reshape(edgenode_scores, B,Ty,Ty) 
 
-    B, max_len, _ = size(edgenode_scores)
-    tmpsoftmax_mask = (parsermask .== 1)                      ;@size tmpsoftmax_mask (B,Ty)
-    mask_1= reshape(tmpsoftmax_mask, B,1,Ty)
-    mask_2= reshape(tmpsoftmax_mask, B,Ty,1)
-    full_mask = mask_1 .+ mask_2 .+ 1e-20
-    masked_scores = edgenode_scores .* full_mask
-    edgenode_ll = log.(softmax(masked_scores, dims=2))
+    _, max_len, _ = size(edgenode_scores)
+    edgeheads_indices = convert(Array{Int32}, edgeheads)
+    edgeheadloss = nll3d(permutedims(edgenode_scores, [1,3,2]), edgeheads_indices)
 
-   # returns the node representations with given indices
-    function getreps(ind, arr)
-        # ind:(T,B), arr: (T,B,H) -> T,B,H
-        results =[]
-        (t,b,h) = size(arr)
-        for i in 1:b
-           for j in 1:t
-               push!(results, arr[ind[j,i],i,:])
-           end
-       end
-       return reshape(reshape(vcat(results...), h,t*b)', t,b,h) 
-    end
-
+    ## Calculate edgelabels scores & loss
     edgelabel_h = permutedims(edgelabel_h,[2,1,3])
 
-    #Mock dropout
-    edgeheads_inds  = convert(Array{Int32}, (edgeheads))    #increase for indices 0
-    edgelabels_inds =convert(Array{Int32}, (edgelabels))    #increase for indices 0
-    _edgelabel_h = getreps(edgeheads_inds', edgelabel_h)                                                    ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
-    _edgelabel_h = permutedims(_edgelabel_h, [3,2,1])                                                       ;@size _edgelabel_h (edgelabel_hiddensize,B,Ty)
-    edgelabel_scores = g.edgelabel_bilinear(_edgelabel_h, permutedims(edgelabel_m, [3,1,2]))                ;@size edgelabel_scores (B,Ty, num_edgelabels)
-    edgelabel_ll = log.(softmax(edgelabel_scores .+1e-20, dims=3)) .+1e-20 # B,Ty,num_tags
+    #Select only the head representations
+    _edgelabel_h = reshape(reshape(edgelabel_h,:,edgelabel_hiddensize)[permutedims(edgeheads_indices,[2,1]),:], Ty,B,:)         ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
+    _edgelabel_h = permutedims(_edgelabel_h, [3,2,1])                                                                           ;@size _edgelabel_h (edgelabel_hiddensize,B,Ty)
+    edgelabel_scores = g.edgelabel_bilinear(_edgelabel_h, permutedims(edgelabel_m, [3,1,2]))                                    ;@size edgelabel_scores (B,Ty, num_edgelabels)
+    edgelabels_indides = convert(Array{Int32}, edgelabels)
+    edgelabelloss = nll3d(edgelabel_scores, edgelabels_indides)
 
-
-    ## Calculate edgeheads and edgelabel losses 
-    edgeheadloss = edgelabelloss = 0.0
-
-    for b in 1:B
-        for t in 2:max_len # Exclude dummy root
-            xh = edgenode_ll[b,edgeheads_inds[b,t],t]
-            #if isnan(xh) println("xh NAN at $t $b ", edgeheads_inds[b,t]) end
-            edgeheadloss += -xh
-                
-            xl = edgelabel_ll[b,t,edgelabels_inds[b,t]]
-            #if isnan(xl) println("xl NAN: $xl") end
-            edgelabelloss+= -xl
-        end
-    end
     ## Graphloss calculation
     graphloss = sum(edgeheadloss + edgelabelloss)
     
@@ -149,8 +118,8 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
     
 
     ## Predictions of edge_labels
-    pred_edgeheads_inds  = convert(Array{Int32}, (pred_edgeheads))'
-    _edgelabel_h = getreps(pred_edgeheads_inds, edgelabel_h)                                             ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
+    pred_edgeheads_indices  = convert(Array{Int32}, (pred_edgeheads))
+    _edgelabel_h = reshape(reshape(edgelabel_h,:,edgelabel_hiddensize)[permutedims(pred_edgeheads_indices,[2,1]),:], Ty,B,:)   ;@size _edgelabel_h (Ty,B,edgelabel_hiddensize)
     _edgelabel_h = permutedims(_edgelabel_h, [3,2,1])                                                    ;@size _edgelabel_h (edgelabel_hiddensize,B,Ty)
     _edgelabel_scores = g.edgelabel_bilinear(_edgelabel_h, permutedims(edgelabel_m, [3,1,2]))            ;@size edgelabel_scores (B,Ty, num_edgelabels)
     inpa(x) = return x[3]     # remove cartesian type 
@@ -159,19 +128,24 @@ function (g::DeepBiaffineGraphDecoder)(hiddens, parsermask, edgeheads, edgelabel
 
 
     ## Graph Decoder Metrics
-    ;@size edgeheads_inds (B,Ty) ;@size edgelabels_inds (B,Ty) ;@size parsermask (B,Ty) ;@size pred_edgeheads (B,Ty) ;@size pred_edgelabels (B,Ty)
+    ;@size edgeheads_indices (B,Ty) ;@size edgelabels_indides (B,Ty) ;@size parsermask (B,Ty) ;@size pred_edgeheads (B,Ty) ;@size pred_edgelabels (B,Ty)
     # Exclude dummy root 
-    _edgeheads = edgeheads_inds[:,2:end]               ;@size _edgeheads (B,Ty-1)
-    _edgelabels = edgelabels_inds[:,2:end]             ;@size _edgelabels (B,Ty-1)
+    _edgeheads = edgeheads_indices[:,2:end]               ;@size _edgeheads (B,Ty-1)
+    _edgelabels = edgelabels_indides[:,2:end]             ;@size _edgelabels (B,Ty-1)
     _parsermask = parsermask[:,2:end]               ;@size _parsermask (B,Ty-1)
     _pred_edgeheads = pred_edgeheads[:,2:end]       ;@size _pred_edgeheads (B,Ty-1)
     _pred_edgelabels = pred_edgelabels[:,2:end]     ;@size _pred_edgelabels (B,Ty-1)
-    g.metrics(_pred_edgeheads,_pred_edgelabels, _edgeheads, _edgelabels, _parsermask, graphloss, edgeheadloss, edgelabelloss)
-
+    g.metrics(_pred_edgeheads,_pred_edgelabels, _edgeheads, _edgelabels, _parsermask, value(graphloss), value(edgeheadloss), value(edgelabelloss))
+    
     return graphloss
 end
 
 
+function nll3d(y,a; dims=2, average=true)
+    indices = findindices(y, a, dims=dims)
+    lp = logp(y,dims=3)[indices] # Changed dims for our case.
+    average ? -mean(lp) : -sum(lp)
+end
 
 
 # TODO: test this function

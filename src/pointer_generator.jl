@@ -142,14 +142,14 @@ function (pg::PointerGenerator)(attnvector, srcattentions, tgtattentions, srcatt
 
     # Add eps for numerical stability.
     likelihood = likelihood .+ 1e-20 #eps
-    loss = sum(-log.(likelihood) .* non_pad_mask) + coverage_loss     # Drop pads.
+    loss = sum(-log.(likelihood) .* non_pad_mask) #+ coverage_loss     # Drop pads.
 
     # Mask out copy targets for which copy does not happen.
     targets = _atype(tgtcopytargets_withoffset) .* tgtcopy_mask + 
               _atype(srccopytargets_withoffset) .* srccopy_mask .* non_tgtcopy_mask +
               _atype(gentargets_withoffset) .* non_srccopy_mask .* non_tgtcopy_mask                    ;@size targets (Ty,B)
 
-    pg.metrics(predictions, targets , non_pad_mask, non_tgtcopy_mask, srccopy_mask, tgtcopy_mask, pg.vocabsize, src_dynamic_vocabsize, loss)
+    pg.metrics(predictions, targets , non_pad_mask, non_tgtcopy_mask, srccopy_mask, tgtcopy_mask, pg.vocabsize, src_dynamic_vocabsize, value(loss))
     #println("loss: $loss")
     return loss
 end

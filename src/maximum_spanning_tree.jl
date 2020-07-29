@@ -1,6 +1,6 @@
 import Base: length, iterate
 using YAML, Knet, IterTools, Random
-using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random, CuArrays, IterTools
+using Knet, Test, Base.Iterators, Printf, LinearAlgebra, Random,  IterTools
 
 # Maximum Spanning Tree extraction using Chu Liu Edmond's Algorithm.
 # Adapted from: https://github.com/sheng-z/stog/blob/master/stog/algorithms/maximum_spanning_tree.py
